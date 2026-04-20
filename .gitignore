@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.env
+.DS_Store
+package-lock.json
+*.tgz
+data/
+.cache/
+.mcp.json
+.claude.json

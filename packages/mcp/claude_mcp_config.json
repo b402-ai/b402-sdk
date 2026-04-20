@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "b402": {
+      "command": "npx",
+      "args": ["-y", "b402-mcp@0.4.0"],
+      "env": {
+        "WORKER_PRIVATE_KEY": "0x...",
+        "SEQUENCER_URL": "https://your-sequencer-url"
+      }
+    }
+  }
+}

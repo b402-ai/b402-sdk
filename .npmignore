@@ -1,0 +1,34 @@
+# Secrets (belt-and-suspenders: package.json `files` is already a whitelist)
+.env
+.env.*
+.env.example
+
+# Source + config (we ship compiled dist/)
+src/
+test/
+examples/
+scripts/test-*.ts
+scripts/test-*.mjs
+tsconfig*.json
+vitest.config.*
+packages/
+
+# Dev / tooling
+.git*
+.github/
+.claude/
+.cursor/
+.mcp.json
+.pr-agent/
+node_modules/
+
+# Dev docs (README.md is explicitly allowed by package.json `files`)
+docs/
+CHANGELOG.md
+TODO.md
+NOTES.md
+
+# OS / editor
+.DS_Store
+*.log
+*.tsbuildinfo

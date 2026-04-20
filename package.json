@@ -1,0 +1,80 @@
+{
+  "name": "@b402ai/sdk",
+  "version": "0.4.1",
+  "description": "Private on-chain execution for agents. Anonymous wallets, gasless transactions, ZK-proven privacy on Base, BSC, and Arbitrum.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json",
+    "./scripts/*": "./scripts/*"
+  },
+  "files": [
+    "dist",
+    "scripts/patch-exports.cjs",
+    "scripts/patch-railgun-sdk.cjs",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm run test",
+    "postinstall": "node scripts/patch-exports.cjs && node scripts/patch-railgun-sdk.cjs"
+  },
+  "keywords": [
+    "b402",
+    "defi",
+    "privacy",
+    "railgun",
+    "gasless",
+    "base",
+    "arbitrum",
+    "bsc",
+    "multi-chain",
+    "erc-4337",
+    "agents",
+    "zk-proofs",
+    "smart-wallet"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/b402-ai/b402-sdk"
+  },
+  "homepage": "https://b402.ai",
+  "bugs": {
+    "url": "https://github.com/b402-ai/b402-sdk/issues"
+  },
+  "dependencies": {
+    "@railgun-community/engine": "9.5.1",
+    "@railgun-community/shared-models": "8.0.0",
+    "@railgun-community/wallet": "8.1.0",
+    "brotli": "^1.3.3",
+    "ethers": "6.13.1",
+    "memory-level": "1.0.0",
+    "snarkjs": "^0.7.6"
+  },
+  "overrides": {
+    "@railgun-community/shared-models": "8.0.0",
+    "@railgun-community/engine": "9.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "dotenv": "^17.3.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}
