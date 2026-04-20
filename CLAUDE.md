@@ -19,7 +19,7 @@ const b402 = new B402({ privateKey: process.env.WORKER_PRIVATE_KEY })
 - `b402.lend({ token: 'USDC', amount: '0.2', vault: 'steakhouse' })` — deposit into Morpho vault
 - `b402.redeem({ vault: 'steakhouse' })` — withdraw from vault
 - `b402.status()` — check balances and positions
-- `b402.swap({ from: 'USDC', to: 'WETH', amount: '5' })` — swap via 0x (needs `zeroXApiKey`)
+- `b402.privateSwap({ from: 'USDC', to: 'WETH', amount: '5' })` — private swap via Odos/Aerodrome
 - `b402.consolidate({ token: 'USDC' })` — merge fragmented UTXOs into one (auto-runs before private ops if needed)
 - `b402.rebalance()` — move to highest-yield vault
 - `b402.privateSwap({ from: 'USDC', to: 'WETH', amount: '0.5' })` — swap FROM privacy pool via RelayAdapt (fully private)

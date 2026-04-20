@@ -37,7 +37,7 @@ dotenv.config()
 
 const b402 = new B402({
   privateKey: process.env.WORKER_PRIVATE_KEY!,
-  zeroXApiKey: process.env.ZERO_X_API_KEY,
+  
   rpcUrl: process.env.BASE_RPC_URL,
   facilitatorUrl: process.env.FACILITATOR_URL,
   onProgress: (e) => {
