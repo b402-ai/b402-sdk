@@ -261,10 +261,6 @@ export async function transactTokens(options: TransactOptions): Promise<Transact
 
   const finalTxHash = receipt?.hash || txResponse.hash
 
-  console.log('[Transact] Success!')
-  console.log('[Transact] Tx hash:', finalTxHash)
-  console.log('[Transact] Fee sent to b402:', ethers.formatUnits(feeAmount, 18), token)
-  console.log('[Transact] Change kept:', ethers.formatUnits(changeAmount, 18), token)
 
   // Extract position from Transact event
   let changeNotePosition: string | undefined
@@ -297,15 +293,9 @@ export async function transactTokens(options: TransactOptions): Promise<Transact
             changeNotePosition = (startPosition + BigInt(1)).toString()
             changeNoteTreeNumber = treeNumber
 
-            console.log('[Transact] Extracted from Transact event data:')
-            console.log('  treeNumber:', treeNumber)
-            console.log('  startPosition:', startPosition.toString())
-            console.log('  changeNotePosition:', changeNotePosition)
           } else {
-            console.log('[Transact] Transact event data too short:', data?.length)
           }
         } catch (err) {
-          console.log('[Transact] Failed to decode Transact event:', err)
         }
         break
       }
@@ -330,7 +320,6 @@ export async function transactTokens(options: TransactOptions): Promise<Transact
 
   // Ensure we have position info (fallback to '0' if not found in event)
   if (!changeNotePosition || !changeNoteTreeNumber) {
-    console.warn('[Transact] Could not extract position from Transact event, using defaults')
     changeNotePosition = changeNotePosition || '0'
     changeNoteTreeNumber = changeNoteTreeNumber || '0'
   }

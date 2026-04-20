@@ -80,7 +80,6 @@ export async function calculateSpendableBalance(
 
   // Request deduplication - if we're already fetching for this address, wait for that result
   if (pendingFetchPromise && pendingFetchAddress === signerAddress.toLowerCase()) {
-    console.log('[Balance] Deduplicating concurrent request for', signerAddress.slice(0, 10))
     return pendingFetchPromise
   }
 
@@ -170,11 +169,10 @@ async function calculateSpendableBalanceInternal(
   }
 
   // Group UTXOs by token and calculate balances
-  console.log('[Balance] Found', allUTXOs.length, 'total spendable UTXOs:', allUTXOs.map(u => ({
-    token: u.note.tokenAddress.slice(0, 10),
-    value: u.note.value.toString(),
-    position: u.position
-  })))
+  //   token: u.note.tokenAddress.slice(0, 10),
+  //   value: u.note.value.toString(),
+  //   position: u.position
+  // })))
   const tokenBalancesMap = new Map<string, { balance: bigint; utxos: typeof allUTXOs }>()
 
   for (const utxo of allUTXOs) {

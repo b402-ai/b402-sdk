@@ -44,7 +44,6 @@ import { B402 } from '@b402ai/sdk'
 
 const b402 = new B402({
   privateKey: process.env.PRIVATE_KEY,
-  zeroXApiKey: process.env.ZERO_X_API_KEY, // optional, for swaps
 })
 ```
 
@@ -381,7 +380,6 @@ Done: TX: 0xabc...
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `PRIVATE_KEY` | Yes | Operator private key (derives incognito wallet) |
-| `ZERO_X_API_KEY` | For swaps | 0x API key for swap quotes |
 
 ## Error Handling
 
@@ -397,7 +395,6 @@ try {
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `zeroXApiKey required for swaps` | No 0x key | Pass `zeroXApiKey` in constructor |
 | `Unknown token: X` | Invalid token symbol | Use USDC, WETH, or DAI |
 | `Unknown vault: X` | Invalid vault name | Use steakhouse, moonwell, gauntlet, steakhouse-hy |
 | `No shares in X` | No position in vault | Deposit first with `b402.lend()` |

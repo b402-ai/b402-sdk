@@ -322,12 +322,6 @@ export async function partialUnshieldTokens(options: PartialUnshieldOptions): Pr
   const changeAmount = utxoValue - requestedAmountWei
 
   // Debug logging to understand the values
-  console.log('[PartialUnshield] Debug values:')
-  console.log('  amount param:', amount)
-  console.log('  requestedAmountWei:', requestedAmountWei.toString())
-  console.log('  utxoValue:', utxoValue.toString())
-  console.log('  changeAmount:', changeAmount.toString())
-  console.log('  changeAmount === 0n:', changeAmount === BigInt(0))
 
   // If change is 0, use regular full unshield instead
   if (changeAmount === BigInt(0)) {
@@ -443,11 +437,6 @@ export async function partialUnshieldTokens(options: PartialUnshieldOptions): Pr
 
   const finalTxHash = receipt?.hash || txResponse.hash
 
-  console.log('[PartialUnshield] Success!')
-  console.log('[PartialUnshield] Tx hash:', finalTxHash)
-  console.log('[PartialUnshield] Unshielded:', ethers.formatUnits(requestedAmountWei, tokenDecimals), token)
-    console.log('[PartialUnshield] Change note created:', changeNote.commitment)
-    console.log('[PartialUnshield] Change amount:', ethers.formatUnits(changeNote.value, tokenDecimals), token)
 
   // Extract position from the Transact event in the receipt
   // This allows us to avoid calling the backend to look up the commitment position
@@ -473,10 +462,6 @@ export async function partialUnshieldTokens(options: PartialUnshieldOptions): Pr
         changeNotePosition = changePosition
         changeNoteTreeNumber = treeNumber
 
-        console.log('[PartialUnshield] Extracted from Transact event:')
-        console.log('  treeNumber:', treeNumber)
-        console.log('  startPosition:', startPosition.toString())
-        console.log('  changeNotePosition:', changePosition)
         break
       }
     }

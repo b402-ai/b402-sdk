@@ -201,14 +201,12 @@ export async function buildShieldTransaction(options: BuildShieldOptions): Promi
       []
     )
 
-    console.log('[buildShieldTransaction] populateShield result:', JSON.stringify(shieldResult, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2))
 
     const transaction = shieldResult.transaction
     if (!transaction) {
       throw new Error('Failed to populate shield transaction')
     }
 
-    console.log('[buildShieldTransaction] transaction.data length:', transaction.data?.length || 0)
 
     // IMPORTANT: B402 fork - use our contract address, not the SDK's default
     // The shield calldata should be compatible since it's the same contract code
@@ -221,7 +219,6 @@ export async function buildShieldTransaction(options: BuildShieldOptions): Promi
       gasPrice
     }
 
-    console.log('[buildShieldTransaction] Using B402 fork:', railgunContractAddress)
 
     result = {
       approveTx,

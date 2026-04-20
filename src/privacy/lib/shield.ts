@@ -129,14 +129,11 @@ export async function shieldTokens(options: ShieldOptions): Promise<ShieldResult
     } else {
       // For browser wallets, use UNIFIED signature from cache
       // IMPORTANT: This MUST use getCachedSignature to match unshield/transact keys
-      console.log('Getting unified signature for mnemonic derivation...')
       const signature = await getCachedSignature(signer)
-      console.log('Signature received, deriving mnemonic...')
       // Derive entropy from signature
       const entropy = ethers.keccak256(signature).slice(0, 34) // 32 bytes + '0x'
       const { Mnemonic } = await import('ethers')
       mnemonic = Mnemonic.fromEntropy(entropy).phrase
-      console.log('Mnemonic derived successfully')
     }
 
     // Create Railgun wallet (for private key path)
@@ -157,26 +154,19 @@ export async function shieldTokens(options: ShieldOptions): Promise<ShieldResult
     }
 
     const allowance = await tokenContract.allowance(signerAddress, railgunSmartWallet)
-    console.log(`[shield] Token: ${tokenAddress}, Spender: ${railgunSmartWallet}`)
-    console.log(`[shield] Current allowance: ${allowance}, Need: ${amountWei} (${amount} with ${tokenDecimals} decimals)`)
     if (allowance < amountWei) {
-      console.log('[shield] Approval needed, sending approve tx...')
       const approveTx = await tokenContract.approve(railgunSmartWallet, ethers.MaxUint256)
-      console.log(`[shield] Approval TX sent: ${approveTx.hash}, waiting for confirmation...`)
       const approveReceipt = await approveTx.wait()
       if (!approveReceipt || approveReceipt.status === 0) {
         throw new Error(`Approval TX failed or was dropped: ${approveTx.hash}`)
       }
-      console.log(`[shield] Approval confirmed in block ${approveReceipt.blockNumber}`)
 
       // Verify allowance was actually set (guards against stale RPC state)
       const newAllowance = await tokenContract.allowance(signerAddress, railgunSmartWallet)
-      console.log(`[shield] Post-approval allowance: ${newAllowance}`)
       if (newAllowance < amountWei) {
         throw new Error(`Approval confirmed but allowance still insufficient: ${newAllowance} < ${amountWei}`)
       }
     } else {
-      console.log(`[shield] Token already approved (allowance: ${allowance})`)
     }
 
     // Build shield transaction
@@ -207,19 +197,16 @@ export async function shieldTokens(options: ShieldOptions): Promise<ShieldResult
     // IMPORTANT: Use our B402 fork address, not the SDK's default (official Railgun)
     // Use explicit gasLimit to bypass estimateGas (avoids stale-state allowance errors)
     // Shield gas: ~822k on Base, ~766k on BSC — use 1.2M for safety margin
-    console.log(`[shield] Sending shield TX to ${railgunSmartWallet}...`)
     const tx = await signer.sendTransaction({
       to: railgunSmartWallet,  // Use our fork, not SDK's transaction.to
       data: transaction.data,
       value: transaction.value,
       gasLimit: 1_200_000
     })
-    console.log(`[shield] Shield TX sent: ${tx.hash}, waiting for confirmation...`)
     const receipt = await tx.wait()
     if (!receipt || receipt.status === 0) {
       throw new Error(`Shield TX reverted: ${tx.hash}`)
     }
-    console.log(`[shield] Shield confirmed in block ${receipt.blockNumber}: ${receipt.hash}`)
 
     return {
       hash: receipt?.hash || tx.hash,

@@ -82,12 +82,10 @@ function convertMerkleProof(apiProof: MerkleProofResponse): {
   // Circuit expects exactly 16 path elements
   // Pad with zeros if needed (shouldn't happen with correct API)
   if (elements.length < MERKLE_TREE_DEPTH) {
-    console.warn(`[convertMerkleProof] Path elements count ${elements.length} < ${MERKLE_TREE_DEPTH}, padding...`)
     while (elements.length < MERKLE_TREE_DEPTH) {
       elements.push(BigInt(0))
     }
   } else if (elements.length > MERKLE_TREE_DEPTH) {
-    console.warn(`[convertMerkleProof] Path elements count ${elements.length} > ${MERKLE_TREE_DEPTH}, truncating...`)
     elements = elements.slice(0, MERKLE_TREE_DEPTH)
   }
 
@@ -139,9 +137,6 @@ export function buildUnshieldProofInputs(
   const computedCommitment = `0x${inputCommitment.toString(16).padStart(64, '0')}`.toLowerCase()
 
   if (expectedCommitment !== computedCommitment) {
-    console.warn('[Proof Inputs] Commitment mismatch!')
-    console.warn('[Proof Inputs] Expected:', expectedCommitment)
-    console.warn('[Proof Inputs] Computed:', computedCommitment)
     throw new Error('Input commitment verification failed')
   }
 
@@ -243,7 +238,6 @@ export function buildPartialUnshieldProofInputs(
   const computedCommitment = `0x${inputCommitment.toString(16).padStart(64, '0')}`.toLowerCase()
 
   if (expectedCommitment !== computedCommitment) {
-    console.warn('[Proof Inputs] Commitment mismatch!')
     throw new Error('Input commitment verification failed')
   }
 
@@ -408,7 +402,6 @@ export function buildTransactProofInputs(
   const computedCommitment = `0x${inputCommitment.toString(16).padStart(64, '0')}`.toLowerCase()
 
   if (expectedCommitment !== computedCommitment) {
-    console.warn('[buildTransactProofInputs] Commitment mismatch!')
     throw new Error('Input commitment verification failed')
   }
 
