@@ -932,6 +932,109 @@ export class B402 {
     return { txHash: result.txHash, proofTimeSeconds }
   }
 
+  /**
+   * Build the Railgun unshield calldata for a FULL UTXO drain (no change note),
+   * without submitting. Pair with {@link cacheShieldsFromReceipt} (no-op for
+   * unshield since it doesn't emit Shield events).
+   *
+   * Use this when you want to submit the unshield via an external sender
+   * (Biconomy MEE, Safe, custom relayer). Returns a single relay() call
+   * targeting RailgunSmartWallet.
+   *
+   * v1 limitation: drains the LARGEST single UTXO of `token` matching the
+   * user's identity (or filtered by `tokenAddress`). The recipient receives
+   * `utxoValue * (1 - 25/10000)` after Railgun's protocol fee. For partial
+   * unshields with change notes, use the legacy {@link unshield} method.
+   *
+   * @returns `{ to, data, value, drainedAmount, recipient, treeNumber, position }`
+   *   — `drainedAmount` is the gross UTXO value (before Railgun fee).
+   */
+  async buildUnshieldCalldata(
+    params: UnshieldParams,
+  ): Promise<{
+    to: string
+    data: string
+    value: string
+    drainedAmount: string
+    recipient: string
+    treeNumber: number
+    position: number
+  }> {
+    const token = this.resolveToken(params.token)
+    await this.init()
+
+    const { deriveRailgunKeys } = await import('./privacy/lib/key-derivation')
+    const { fetchSpendableUTXOs } = await import('./privacy/lib/utxo-fetcher')
+    const { buildUnshieldProofInputs } = await import('./privacy/lib/proof-inputs')
+    const { generateProofClientSide } = await import('./privacy/lib/prover')
+    const { buildUnshieldTransaction } = await import('./privacy/lib/transaction-formatter')
+
+    const chainId = this.chainId
+    const masterSigner = this.config.signer ?? new ethers.Wallet(this.config.privateKey!)
+    const signature = await masterSigner.signMessage(INCOGNITO_MESSAGE)
+    const keys = await deriveRailgunKeys(signature)
+    const masterEOA = await masterSigner.getAddress()
+
+    const [swUtxos, eoaUtxos] = await Promise.all([
+      fetchSpendableUTXOs(this.wallet, keys.viewingKeyPair.privateKey, keys.masterPublicKey, keys.nullifyingKey, token.address, chainId).catch(() => []),
+      fetchSpendableUTXOs(masterEOA, keys.viewingKeyPair.privateKey, keys.masterPublicKey, keys.nullifyingKey, token.address, chainId).catch(() => []),
+    ])
+
+    const seen = new Set<string>()
+    const utxos: typeof swUtxos = []
+    for (const u of [...swUtxos, ...eoaUtxos]) {
+      const k = `${u.tree}-${u.position}`
+      if (!seen.has(k)) { seen.add(k); utxos.push(u) }
+    }
+
+    const tokenUTXOs = utxos
+      .filter(u => u.note.tokenAddress.toLowerCase() === token.address.toLowerCase())
+      .sort((a, b) => Number(b.note.value - a.note.value))
+
+    if (tokenUTXOs.length === 0) {
+      throw new Error(`No shielded balance for ${token.symbol}. Shield tokens first.`)
+    }
+
+    const utxo = tokenUTXOs[0]
+    const recipient = params.to ?? this.wallet
+
+    const proofInputs = buildUnshieldProofInputs({
+      utxo,
+      nullifyingKey: keys.nullifyingKey,
+      spendingKeyPair: keys.spendingKeyPair,
+      unshieldAmount: utxo.note.value,
+      recipientAddress: recipient,
+      tokenAddress: token.address,
+    })
+
+    const proofResult = await generateProofClientSide({
+      ...proofInputs,
+      spendingPrivateKey: keys.spendingKeyPair.privateKey,
+      chainId,
+      treeNumber: utxo.tree,
+      outputCount: 1 as const,
+    })
+
+    const unshieldTx = buildUnshieldTransaction({
+      proofResult,
+      treeNumber: utxo.tree,
+      tokenAddress: token.address,
+      recipientAddress: recipient,
+      unshieldAmount: utxo.note.value,
+      chainId,
+    })
+
+    return {
+      to: unshieldTx.to,
+      data: unshieldTx.data,
+      value: '0',
+      drainedAmount: utxo.note.value.toString(),
+      recipient,
+      treeNumber: utxo.tree,
+      position: utxo.position,
+    }
+  }
+
   /** Unshield a single UTXO fully (no change note). Used by unshield('all'). */
   private async _unshieldSingleUTXO(
     utxo: any, keys: any, token: any, chainId: number,
@@ -1545,6 +1648,28 @@ export class B402 {
     } finally {
       await sdkWallet.stopRailgunEngine()
     }
+  }
+
+  /**
+   * Public: parse Shield events from a transaction receipt and write the
+   * resulting commitments to the local shield cache (`~/.b402/shield-cache.json`).
+   *
+   * Use this after submitting `build*Calldata` output through any external
+   * sender (Biconomy MEE, Safe, custom bundler) so the new shielded UTXO is
+   * spendable by subsequent privateLend/redeem/unshield calls without waiting
+   * for the b402 backend's bundler-keyed indexer.
+   *
+   * Accepts either an ethers `TransactionReceipt` or a viem-style receipt
+   * (`{ logs: [{ topics, data, transactionHash }] }`) — fields are duck-typed
+   * so the SDK does not force a specific Ethereum-RPC client on consumers.
+   */
+  async cacheShieldsFromReceipt(
+    txHash: string,
+    receipt: ethers.TransactionReceipt | {
+      logs: ReadonlyArray<{ topics: ReadonlyArray<string>; data: string }>
+    },
+  ): Promise<void> {
+    return this.cacheShieldFromReceipt(txHash, receipt as ethers.TransactionReceipt)
   }
 
   /** Parse Shield events from TX receipt and cache locally for immediate balance availability. */
@@ -2554,6 +2679,50 @@ export class B402 {
   }
 
   /**
+   * Same as {@link privateLend} but returns the Railgun relay() calldata instead
+   * of submitting. Submit via any ERC-4337 sender (Biconomy Nexus through MEE,
+   * Safe, a custom bundler). After the tx confirms, pass the receipt to
+   * {@link cacheShieldsFromReceipt} so subsequent calls see the new share UTXO.
+   *
+   * @returns `{ to, data, value }` — the single call that composes
+   *          unshield → approve → vault.deposit → shield back to pool.
+   */
+  async buildPrivateLendCalldata(
+    params: PrivateLendParams,
+  ): Promise<{ to: string; data: string; value: string }> {
+    this.requireBase('buildPrivateLendCalldata')
+    const token = this.resolveToken(params.token || 'USDC')
+    const vault = resolveVault(params.vault || 'steakhouse')
+    await this.init()
+    const amount = ethers.parseUnits(params.amount, token.decimals)
+
+    const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
+    const erc20 = new ethers.Interface(ERC20_ABI)
+
+    const userCalls = [
+      {
+        to: token.address,
+        data: erc20.encodeFunctionData('approve', [vault.address, amount]),
+        value: '0',
+      },
+      {
+        to: vault.address,
+        data: ERC4626_INTERFACE.encodeFunctionData('deposit', [amount, RELAY_ADAPT_ADDRESS]),
+        value: '0',
+      },
+    ]
+
+    return this.buildCrossContractCalldata({
+      tokenAddress: token.address,
+      amount,
+      userCalls,
+      shieldTokens: [{ tokenAddress: vault.address }],
+      stepOffset: 1,
+      totalSteps: 6,
+    })
+  }
+
+  /**
    * Redeem shares privately from a Morpho vault back to the privacy pool.
    *
    * Flow: Pool shares → unshield to RelayAdapt → vault.redeem → shield USDC → Pool
@@ -2614,6 +2783,82 @@ export class B402 {
     return {
       txHash: result.txHash,
       assetsReceived: ethers.formatUnits(expectedAssets, 6),
+      vault: vault.name,
+    }
+  }
+
+  /**
+   * Same as {@link privateRedeem} but returns the Railgun relay() calldata
+   * instead of submitting. Submit via any ERC-4337 sender. After the tx
+   * confirms, pass the receipt to {@link cacheShieldsFromReceipt} so the
+   * re-shielded USDC UTXO becomes immediately spendable.
+   */
+  async buildPrivateRedeemCalldata(
+    params: PrivateRedeemParams = {},
+  ): Promise<{
+    to: string
+    data: string
+    value: string
+    /** Expected underlying USDC received (human-readable), computed via vault.convertToAssets. */
+    expectedAssets: string
+    /** Shares (base units as string) that will be redeemed. */
+    shares: string
+    vault: string
+  }> {
+    this.requireBase('buildPrivateRedeemCalldata')
+    const vault = resolveVault(params.vault || 'steakhouse')
+    await this.init()
+
+    const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
+
+    let shares: bigint
+    if (params.shares) {
+      shares = ethers.parseUnits(params.shares, vault.decimals)
+    } else {
+      const shieldedBals = await this.getShieldedBalances()
+      const shareBal = shieldedBals.find(
+        b => b.address?.toLowerCase() === vault.address.toLowerCase(),
+      )
+      if (!shareBal || parseFloat(shareBal.balance) === 0) {
+        throw new Error(`No shielded shares in ${vault.name}. Use privateLend() first.`)
+      }
+      const shareTokenContract = new ethers.Contract(
+        vault.address,
+        ['function decimals() view returns (uint8)'],
+        this.provider,
+      )
+      const shareDecimals = Number(await shareTokenContract.decimals())
+      shares = ethers.parseUnits(shareBal.balance, shareDecimals)
+    }
+
+    const vaultContract = new ethers.Contract(vault.address, ERC4626_INTERFACE, this.provider)
+    const expectedAssets: bigint = await vaultContract.convertToAssets(shares)
+
+    const userCalls = [
+      {
+        to: vault.address,
+        data: ERC4626_INTERFACE.encodeFunctionData('redeem', [
+          shares,
+          RELAY_ADAPT_ADDRESS,
+          RELAY_ADAPT_ADDRESS,
+        ]),
+        value: '0',
+      },
+    ]
+
+    const call = await this.buildCrossContractCalldata({
+      tokenAddress: vault.address,
+      amount: shares,
+      userCalls,
+      shieldTokens: [{ tokenAddress: BASE_TOKENS.USDC.address }],
+      stepOffset: 1,
+      totalSteps: 6,
+    })
+
+    return {
+      ...call,
+      expectedAssets: ethers.formatUnits(expectedAssets, 6),
+      shares: shares.toString(),
       vault: vault.name,
     }
   }
@@ -2760,14 +3005,44 @@ export class B402 {
    * 7. Submit as UserOp via facilitator
    * 8. Cache output shields from receipt
    */
-  private async executeCrossContractCall(params: {
+  /**
+   * Build the relay() calldata for a cross-contract call without submitting.
+   *
+   * Returns the Railgun `transact()` → RelayAdapt → user calls transaction that
+   * any ERC-4337 sender (b402 smart wallet, Biconomy Nexus via MEE, Safe, a
+   * custom relayer) can submit. The ZK proof, merkle inputs, and nullifier are
+   * all computed here; spend authority lives in the proof, not in msg.sender.
+   *
+   * Pair with `cacheShieldsFromReceipt()` after the tx confirms to populate the
+   * local shield cache so subsequent privateLend/redeem/unshield calls find the
+   * new UTXO immediately (not blocked on backend indexing).
+   *
+   * @returns `{ to, data, value }` — directly submittable as a single call.
+   */
+  async buildCrossContractCalldata(params: {
     tokenAddress: string
     amount: bigint
     userCalls: Array<{ to: string; data: string; value?: string }>
     shieldTokens: Array<{ tokenAddress: string }>
     stepOffset?: number
     totalSteps?: number
-  }): Promise<{ txHash: string }> {
+  }): Promise<{ to: string; data: string; value: string }> {
+    const prepared = await this._prepareCrossContractCalldata(params)
+    return { to: prepared.to, data: prepared.data, value: '0' }
+  }
+
+  /**
+   * Internal: builds the relay calldata (same as buildCrossContractCalldata but
+   * preserves the prepared object shape for the submit path to consume).
+   */
+  private async _prepareCrossContractCalldata(params: {
+    tokenAddress: string
+    amount: bigint
+    userCalls: Array<{ to: string; data: string; value?: string }>
+    shieldTokens: Array<{ tokenAddress: string }>
+    stepOffset?: number
+    totalSteps?: number
+  }): Promise<{ to: string; data: string }> {
     const { tokenAddress, amount, userCalls, shieldTokens, stepOffset = 0, totalSteps = 6 } = params
 
     const step = (n: number, title: string, message: string) => {
@@ -2974,11 +3249,31 @@ export class B402 {
 
     const relayTx = buildRelayCalldata(txStruct, actionData)
 
+    return { to: relayTx.to, data: relayTx.data }
+  }
+
+  /**
+   * Build relay calldata AND submit via b402's facilitator. Preserves the
+   * existing privateLend/privateRedeem/privateSwap behavior: one UserOp,
+   * auto-cached output shields, progress events, tx hash returned.
+   */
+  private async executeCrossContractCall(params: {
+    tokenAddress: string
+    amount: bigint
+    userCalls: Array<{ to: string; data: string; value?: string }>
+    shieldTokens: Array<{ tokenAddress: string }>
+    stepOffset?: number
+    totalSteps?: number
+  }): Promise<{ txHash: string }> {
+    const { stepOffset = 0, totalSteps = 6 } = params
+
+    const prepared = await this._prepareCrossContractCalldata(params)
+
     // ── Step 6: Submit as UserOp ─────────────────────────────────────
-    step(6, 'Executing', 'Submitting via facilitator')
+    this.emit({ type: 'step', step: stepOffset + 6, totalSteps, title: 'Executing', message: 'Submitting via facilitator' })
 
     const calls: Call[] = [
-      { to: relayTx.to, value: '0', data: relayTx.data },
+      { to: prepared.to, value: '0', data: prepared.data },
     ]
 
     const result = await this.execute(calls)
