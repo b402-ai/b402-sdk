@@ -65,6 +65,9 @@ export type {
   ClaimRewardsParams,
   ClaimRewardsResult,
   LPPosition,
+  ExecuteParams,
+  ExecuteResultMap,
+  ExecuteResult,
 } from './b402'
 export { BASE_TOKENS, BASE_CONTRACTS } from './types'
 export { MORPHO_VAULTS } from './lend/morpho-vaults'

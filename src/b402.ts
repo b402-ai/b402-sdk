@@ -504,7 +504,7 @@ export class B402 {
 
   // ── Core: facilitator verify → sign → settle ──────────────────────
 
-  private async execute(calls: Call[]): Promise<{ txHash: string }> {
+  private async submitUserOp(calls: Call[]): Promise<{ txHash: string }> {
     await this.init()
 
     // Step 1: Verify — facilitator builds UserOp + paymaster signature
@@ -618,7 +618,7 @@ export class B402 {
       { to: quote.to, value: quote.value || '0', data: quote.data },
     ]
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
     return {
       txHash: result.txHash,
       amountIn: params.amount,
@@ -642,7 +642,7 @@ export class B402 {
       { to: vault.address, value: '0', data: ERC4626_INTERFACE.encodeFunctionData('deposit', [amount, this.wallet]) },
     ]
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
     return { txHash: result.txHash, amount: params.amount, vault: vault.name }
   }
 
@@ -667,7 +667,7 @@ export class B402 {
       { to: vault.address, value: '0', data: ERC4626_INTERFACE.encodeFunctionData('redeem', [shares, this.wallet, this.wallet]) },
     ]
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
     return {
       txHash: result.txHash,
       assetsReceived: ethers.formatUnits(assets, 6),
@@ -678,7 +678,7 @@ export class B402 {
   /** Execute arbitrary calls through the smart wallet. Gasless via facilitator. */
   async transact(calls: Call[]): Promise<{ txHash: string }> {
     if (!calls || calls.length === 0) throw new Error('calls array is required and must not be empty')
-    return this.execute(calls)
+    return this.submitUserOp(calls)
   }
 
   /** Unshield tokens from Railgun privacy pool to smart wallet. Generates ZK proof client-side.
@@ -879,7 +879,7 @@ export class B402 {
       { to: unshieldTx.to, value: '0', data: unshieldTx.data },
     ]
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     // Store change note if this was a partial unshield
     if (changeNoteInfo && isPartial) {
@@ -966,7 +966,7 @@ export class B402 {
       chainId,
     })
 
-    const result = await this.execute([{ to: unshieldTx.to, value: '0', data: unshieldTx.data }])
+    const result = await this.submitUserOp([{ to: unshieldTx.to, value: '0', data: unshieldTx.data }])
     return { txHash: result.txHash, proofTimeSeconds }
   }
 
@@ -1127,7 +1127,7 @@ export class B402 {
     })
 
     const calls: Call[] = [{ to: unshieldTx.to, value: '0', data: unshieldTx.data }]
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     // Store change note if partial (same logic as unshield)
     if (changeNoteInfo && isPartial) {
@@ -1474,7 +1474,7 @@ export class B402 {
       { to: token.address, value: '0', data: erc20.encodeFunctionData('approve', [this.contracts.RAILGUN_RELAY, amount]) },
       { to: this.contracts.RAILGUN_RELAY, value: '0', data: shieldCalldata },
     ]
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     // Step 3: Cache shield from TX receipt + wait for backend indexing
     // Parse Shield events from receipt to cache locally (immediate availability)
@@ -1923,7 +1923,7 @@ export class B402 {
 
     this.emit({ type: 'step', step: 3, totalSteps: 3, title: 'Execute', message: 'Submitting LP transaction' })
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
     this.emit({ type: 'done', title: 'LP Added', message: `${params.amount} USDC → ${pool.name}` })
 
     return { txHash: result.txHash, amount: params.amount, pool: pool.name }
@@ -1973,7 +1973,7 @@ export class B402 {
       deadline: BigInt(Math.floor(Date.now() / 1000) + 1800),
     })
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     return {
       txHash: result.txHash,
@@ -1993,7 +1993,7 @@ export class B402 {
 
     const pool = resolvePool(params.pool || 'weth-usdc')
     const calls = buildClaimRewardsCalls(pool.gaugeAddress, this.wallet)
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     return { txHash: result.txHash, pool: pool.name }
   }
@@ -2026,7 +2026,7 @@ export class B402 {
 
     this.emit({ type: 'step', step: 2, totalSteps: 3, title: 'Executing', message: 'Placing bet via SpeedMarketsAMMCreator' })
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     this.emit({ type: 'done', title: 'Done', message: `${params.asset} ${params.direction} bet placed — settles in ${params.duration || '10m'}` })
 
@@ -2147,7 +2147,7 @@ export class B402 {
 
     this.emit({ type: 'step', step: 4, totalSteps: 4, title: 'Executing', message: 'Submitting to Base' })
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     this.emit({ type: 'info', title: 'Account', message: accountId.toString() })
     this.emit({ type: 'done', title: 'Done', message: `${params.side} ${params.size} ${params.market} — settles in ~2 blocks` })
@@ -2198,7 +2198,7 @@ export class B402 {
       indexPrice,
     )
 
-    const result = await this.execute([{ to: orderCall.to, value: orderCall.value, data: orderCall.data }])
+    const result = await this.submitUserOp([{ to: orderCall.to, value: orderCall.value, data: orderCall.data }])
 
     return { txHash: result.txHash, market: marketKey }
   }
@@ -2309,7 +2309,7 @@ export class B402 {
 
     this.emit({ type: 'step', step: 3, totalSteps: 4, title: 'Executing', message: 'Submitting to Base' })
 
-    const result = await this.execute(calls.map(c => ({ to: c.to, value: c.value, data: c.data })))
+    const result = await this.submitUserOp(calls.map(c => ({ to: c.to, value: c.value, data: c.data })))
 
     this.emit({ type: 'done', title: 'Done', message: `${params.side} ${params.notional} USDC notional on ${params.instrument}` })
 
@@ -2363,7 +2363,7 @@ export class B402 {
 
     this.emit({ type: 'step', step: 3, totalSteps: 3, title: 'Executing', message: 'Submitting close to Base' })
 
-    const result = await this.execute(calls.map(c => ({ to: c.to, value: c.value, data: c.data })))
+    const result = await this.submitUserOp(calls.map(c => ({ to: c.to, value: c.value, data: c.data })))
 
     this.emit({ type: 'done', title: 'Done', message: `Closed ${position.side} position on ${params.instrument}` })
 
@@ -2981,7 +2981,7 @@ export class B402 {
       { to: relayTx.to, value: '0', data: relayTx.data },
     ]
 
-    const result = await this.execute(calls)
+    const result = await this.submitUserOp(calls)
 
     // Cache output shields from receipt
     try {
@@ -3181,7 +3181,70 @@ export class B402 {
   static get speedMarketAssets() {
     return ['ETH', 'BTC']
   }
+
+  // ── Unified dispatcher ────────────────────────────────────────────────
+  //
+  // `execute` is the one-verb surface for agents: pass `{ action, ...args }`
+  // and it routes to the matching typed method. The discriminated union
+  // preserves full autocomplete — picking an `action` narrows the rest of
+  // the params to exactly that method's shape.
+  async execute<A extends ExecuteParams['action']>(
+    params: Extract<ExecuteParams, { action: A }>,
+  ): Promise<ExecuteResultMap[A]>
+  async execute(params: ExecuteParams): Promise<ExecuteResult> {
+    switch (params.action) {
+      case 'privateSwap': {
+        const { action: _a, ...rest } = params
+        return this.privateSwap(rest)
+      }
+      case 'privateLend': {
+        const { action: _a, ...rest } = params
+        return this.privateLend(rest)
+      }
+      case 'privateRedeem': {
+        const { action: _a, ...rest } = params
+        return this.privateRedeem(rest)
+      }
+      case 'privateCrossChain': {
+        const { action: _a, ...rest } = params
+        return this.privateCrossChain(rest)
+      }
+      case 'shield': {
+        const { action: _a, ...rest } = params
+        return this.shield(rest)
+      }
+      case 'unshield': {
+        const { action: _a, ...rest } = params
+        return this.unshield(rest)
+      }
+      default: {
+        const exhaustive: never = params
+        throw new Error(`Unknown action: ${(exhaustive as { action: string }).action}`)
+      }
+    }
+  }
 }
+
+// ── execute() param union & result map ─────────────────────────────────
+
+export type ExecuteParams =
+  | ({ action: 'privateSwap' } & PrivateSwapParams)
+  | ({ action: 'privateLend' } & PrivateLendParams)
+  | ({ action: 'privateRedeem' } & PrivateRedeemParams)
+  | ({ action: 'privateCrossChain' } & PrivateCrossChainParams)
+  | ({ action: 'shield' } & ShieldParams)
+  | ({ action: 'unshield' } & UnshieldParams)
+
+export interface ExecuteResultMap {
+  privateSwap: PrivateSwapResult
+  privateLend: PrivateLendResult
+  privateRedeem: PrivateRedeemResult
+  privateCrossChain: PrivateCrossChainResult
+  shield: ShieldResult
+  unshield: UnshieldResult
+}
+
+export type ExecuteResult = ExecuteResultMap[keyof ExecuteResultMap]
 
 // ── Convenience exports ───
 export { BASE_TOKENS, BASE_CONTRACTS } from './types'
