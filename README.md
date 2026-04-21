@@ -42,6 +42,20 @@ const s = await b402.status()
 
 No API keys needed. The SDK derives an anonymous smart wallet, and the b402 facilitator sponsors all gas.
 
+## For Agents — One Verb
+
+`b402.execute({ action, ...args })` is the agent-native entrypoint. Maps 1:1 to the `{name, arguments}` shape LLMs emit as tool calls. A discriminated union preserves full TypeScript autocomplete — picking an `action` narrows the rest of the params to that method's shape.
+
+```typescript
+await b402.execute({ action: 'privateSwap', from: 'USDC', to: 'WETH', amount: '10' })
+await b402.execute({ action: 'privateLend', token: 'USDC', amount: '100', vault: 'steakhouse' })
+await b402.execute({ action: 'privateCrossChain', toChain: 'arbitrum', fromToken: 'USDC', toToken: 'USDC', amount: '50', destinationAddress: '0x...' })
+await b402.execute({ action: 'shield',   token: 'USDC', amount: '10' })
+await b402.execute({ action: 'unshield', token: 'USDC', amount: '5' })
+```
+
+Under the hood it routes to the typed methods below — use either surface interchangeably.
+
 ## How It Works
 
 ```
@@ -74,6 +88,22 @@ Default RPC (Alchemy free tier) works for testing. For production, set `BASE_RPC
 4. Chain-specific production default
 
 ## API
+
+### Unified Dispatcher
+
+#### `b402.execute(params)` — Agent-native entrypoint
+
+One method, tagged by `action`. Type-safe — the `action` field narrows `params` to that method's shape and the return type to that method's result. Routes internally to the typed methods.
+
+```typescript
+import type { ExecuteParams, ExecuteResultMap } from '@b402ai/sdk'
+
+// action narrows params AND the return type
+const r = await b402.execute({ action: 'privateLend', token: 'USDC', amount: '100', vault: 'steakhouse' })
+// r: { txHash, amount, vault }
+```
+
+Supported actions: `privateSwap`, `privateLend`, `privateRedeem`, `privateCrossChain`, `shield`, `unshield`.
 
 ### Private DeFi (via RelayAdapt)
 
