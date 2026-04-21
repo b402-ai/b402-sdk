@@ -13,6 +13,25 @@ const b402 = new B402({
 })
 ```
 
+## Unified Dispatcher
+
+Agent-native entrypoint. `action` is a discriminated tag — picking it narrows `params` to that method's shape and the return to that method's result.
+
+```typescript
+await b402.execute({ action, ...params })
+```
+
+| Action | Dispatches to | Params shape |
+|--------|---------------|--------------|
+| `privateSwap` | `b402.privateSwap` | `{ from, to, amount, slippageBps? }` |
+| `privateLend` | `b402.privateLend` | `{ token?, amount, vault? }` |
+| `privateRedeem` | `b402.privateRedeem` | `{ vault?, shares? }` |
+| `privateCrossChain` | `b402.privateCrossChain` | `{ toChain, fromToken, toToken, amount, destinationAddress, slippageBps? }` |
+| `shield` | `b402.shield` | `{ token, amount }` |
+| `unshield` | `b402.unshield` | `{ token, amount, to? }` |
+
+Types `ExecuteParams`, `ExecuteResultMap`, `ExecuteResult` are exported from the package entrypoint.
+
 ## Private DeFi (via RelayAdapt)
 
 Atomic operations through Railgun privacy pool. On-chain: only RelayAdapt visible.

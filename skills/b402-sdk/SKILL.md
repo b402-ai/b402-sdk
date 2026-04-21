@@ -21,12 +21,14 @@ metadata:
 
 # @b402ai/sdk — Private DeFi for Agents
 
-**One import. Gasless. Untraceable.**
+**One import. One verb. Gasless. Untraceable.**
 
 ```typescript
 import { B402 } from '@b402ai/sdk'
 const b402 = new B402({ privateKey: '0x...' })
-await b402.swap({ from: 'USDC', to: 'WETH', amount: '10' })
+
+// Agent-native: one verb, tagged by action. Maps 1:1 to LLM tool-call shape.
+await b402.execute({ action: 'privateSwap', from: 'USDC', to: 'WETH', amount: '10' })
 ```
 
 ## Quick Start
@@ -64,6 +66,28 @@ const status = await b402.status()
 ```
 
 ## Commands
+
+### Execute (Unified Dispatcher)
+
+One verb for agents. The `action` field tags a discriminated union — TypeScript narrows `params` to exactly that action's shape, and the return type to that action's result. Maps 1:1 to the `{name, arguments}` shape LLMs emit as tool calls.
+
+```typescript
+// Pick an action; the rest of the object is typed to that action's params.
+await b402.execute({ action: 'privateSwap',       from: 'USDC', to: 'WETH', amount: '10' })
+await b402.execute({ action: 'privateLend',       token: 'USDC', amount: '100', vault: 'steakhouse' })
+await b402.execute({ action: 'privateRedeem',     vault: 'steakhouse' })
+await b402.execute({ action: 'privateCrossChain', toChain: 'arbitrum', fromToken: 'USDC', toToken: 'USDC', amount: '50', destinationAddress: '0x...' })
+await b402.execute({ action: 'shield',            token: 'USDC', amount: '10' })
+await b402.execute({ action: 'unshield',          token: 'USDC', amount: '5' })
+```
+
+`execute()` routes to the typed methods below. They are equivalent — use either surface.
+
+Exported types for typing tool-call handlers:
+
+```typescript
+import type { ExecuteParams, ExecuteResultMap, ExecuteResult } from '@b402ai/sdk'
+```
 
 ### Shield (Enter Privacy Pool)
 

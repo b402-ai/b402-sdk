@@ -20,6 +20,18 @@ const b402 = new B402({
 
 Only `privateKey` is required. The facilitator handles gas, wallet deployment, and UserOp submission.
 
+## Agent Dispatcher
+
+For agents, use `execute({ action, ...args })` — one verb, typed per action. Maps 1:1 to LLM tool-call shape.
+
+```typescript
+await b402.execute({ action: 'privateSwap', from: 'USDC', to: 'WETH', amount: '10' })
+await b402.execute({ action: 'privateLend', token: 'USDC', amount: '100', vault: 'steakhouse' })
+await b402.execute({ action: 'privateCrossChain', toChain: 'arbitrum', fromToken: 'USDC', toToken: 'USDC', amount: '50', destinationAddress: '0x...' })
+```
+
+Supported actions: `privateSwap`, `privateLend`, `privateRedeem`, `privateCrossChain`, `shield`, `unshield`. The typed methods below are equivalent — use whichever you prefer.
+
 ## Shield
 
 Move USDC into the Railgun privacy pool. After shielding, the funding source is untraceable.
