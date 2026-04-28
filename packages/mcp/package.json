@@ -1,6 +1,6 @@
 {
   "name": "b402-mcp",
-  "version": "0.6.0",
+  "version": "0.6.3-next.0",
   "type": "module",
   "description": "Private DeFi MCP server. 12 tools. ZK proofs. Gasless. Every DeFi primitive on Base — privately.",
   "bin": {
