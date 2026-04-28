@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
-import { getB402 } from '../lib/b402-client.js'
+import { getB402, SUPPORTED_CHAINS } from '../lib/b402-client.js'
 import { sequencer } from '../lib/sequencer-client.js'
 
 const PAYMENT_TOKEN = 'USDC'
@@ -78,11 +78,12 @@ async function extractPaymentRequirement(response: Response): Promise<X402Requir
 export function registerCompatibilityTools(server: McpServer) {
   server.tool(
     'b402_balance',
-    'Check b402 balance for payments. Reads sequencer credits when `agentId` is provided, otherwise reads wallet + shielded balances.',
+    'Check b402 balance for payments. Reads sequencer credits when `agentId` is provided. Otherwise queries wallet + shielded balances across Base, Arbitrum, and BSC. Pass `chain` to scope to a single chain.',
     {
       agentId: z.string().optional().describe('Optional sequencer agent id for credit balance lookup'),
+      chain: z.enum(['base', 'arbitrum', 'bsc']).optional().describe('Optional: scope to a single chain. Default queries all 3.'),
     },
-    async ({ agentId }) => {
+    async ({ agentId, chain }) => {
       try {
         if (agentId) {
           const bal = await sequencer.getBalance(agentId)
@@ -99,21 +100,50 @@ export function registerCompatibilityTools(server: McpServer) {
           }
         }
 
-        const b402 = getB402()
-        const status = await b402.status()
-        const walletUsdc = status.balances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
-        const poolUsdc = status.shieldedBalances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+        // Wallet/pool balance — multi-chain (or scoped to one if `chain` given).
+        const targets = chain
+          ? SUPPORTED_CHAINS.filter((c) => c.name === chain)
+          : SUPPORTED_CHAINS
 
-        return {
-          content: [{
-            type: 'text',
-            text:
-              `b402 wallet balance\n` +
-              `Incognito wallet: ${status.smartWallet}\n` +
-              `Wallet ${PAYMENT_TOKEN}: ${walletUsdc}\n` +
-              `Shielded ${PAYMENT_TOKEN}: ${poolUsdc}`,
-          }],
+        const results = await Promise.all(
+          targets.map(async (c) => {
+            try {
+              const b402 = getB402(c.chainId)
+              const status = await b402.status()
+              const walletUsdc =
+                status.balances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+              const poolUsdc =
+                status.shieldedBalances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+              return {
+                chain: c.name,
+                smartWallet: status.smartWallet,
+                walletUsdc,
+                poolUsdc,
+                ok: true as const,
+              }
+            } catch (e: any) {
+              return { chain: c.name, ok: false as const, error: e.message }
+            }
+          }),
+        )
+
+        // Smart wallet address is the same on all chains (Nexus CREATE2 deterministic).
+        const sw = results.find((r) => r.ok)?.smartWallet ?? '(unavailable)'
+
+        const lines = [`b402 wallet balance`, `Incognito wallet: ${sw}`, '']
+        for (const r of results) {
+          if (r.ok) {
+            lines.push(
+              `${r.chain.padEnd(9)} wallet: ${r.walletUsdc} ${PAYMENT_TOKEN}, shielded: ${r.poolUsdc} ${PAYMENT_TOKEN}`,
+            )
+          } else {
+            lines.push(`${r.chain.padEnd(9)} (error: ${r.error})`)
+          }
         }
+        lines.push('')
+        lines.push(`Same address on all chains. Send USDC to ${sw} on any of: Base, Arbitrum, BSC.`)
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] }
       } catch (e: any) {
         return {
           content: [{ type: 'text', text: `Error: ${e.message}` }],

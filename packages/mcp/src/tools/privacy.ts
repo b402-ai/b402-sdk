@@ -1,8 +1,17 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
-import { getB402 } from '../lib/b402-client.js'
+import { getB402, SUPPORTED_CHAINS, MORPHO_CHAINS } from '../lib/b402-client.js'
 
 const basescan = (hash: string) => `https://basescan.org/tx/${hash}`
+
+function explorerTxLink(chainId: number, hash: string): string {
+  switch (chainId) {
+    case 8453: return `https://basescan.org/tx/${hash}`
+    case 42161: return `https://arbiscan.io/tx/${hash}`
+    case 56: return `https://bscscan.com/tx/${hash}`
+    default: return hash
+  }
+}
 
 const TOKENS: Record<string, { address: string; decimals: number }> = {
   USDC: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
@@ -12,22 +21,26 @@ const TOKENS: Record<string, { address: string; decimals: number }> = {
   USDT: { address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2', decimals: 6 },
 }
 
+const CHAIN_ENUM = ['base', 'arbitrum', 'bsc'] as const
+const MORPHO_CHAIN_ENUM = ['base', 'arbitrum'] as const
+
 export function registerPrivacyTools(server: McpServer) {
 
   server.tool(
     'shield_usdc',
-    'Move tokens from the wallet into the Railgun privacy pool. Once shielded, tokens are ZK-encrypted as UTXOs — invisible on-chain. This is the entry point for all private operations (swap, lend, strategy). Takes ~30-60 seconds for the shield TX + indexing.',
+    'Move tokens from the wallet into the Railgun privacy pool. Once shielded, tokens are ZK-encrypted as UTXOs — invisible on-chain. This is the entry point for all private operations. Takes ~30-60 seconds for the shield TX + indexing. Supported on Base, Arbitrum, BSC — pass `chain` to pick.',
     {
       amount: z.string().describe('Amount to shield (e.g. "10")'),
       token: z.string().optional().default('USDC').describe('Token to shield'),
+      chain: z.enum(CHAIN_ENUM).optional().default('base').describe('Chain to shield on. Default: base.'),
     },
-    async ({ amount, token }) => {
+    async ({ amount, token, chain }) => {
       try {
-        const b402 = getB402()
+        const b402 = getB402(chain)
         const result = await b402.shield({ token, amount })
         return { content: [{ type: 'text', text:
-          `Shielded ${amount} ${token} into privacy pool.\n` +
-          `TX: ${basescan(result.txHash)}\n` +
+          `Shielded ${amount} ${token} into ${chain} privacy pool.\n` +
+          `TX: ${explorerTxLink(b402.chainId, result.txHash)}\n` +
           `Indexed: ${result.indexed}`
         }] }
       } catch (e: any) {
@@ -38,48 +51,72 @@ export function registerPrivacyTools(server: McpServer) {
 
   server.tool(
     'check_pool_balance',
-    'Check all balances: wallet (public), privacy pool (shielded ZK-encrypted tokens), Morpho vault positions (yield), and Aerodrome LP positions. The privacy pool balance is decrypted client-side using the private key — only the owner can see it.',
-    {},
-    async () => {
+    'Check all balances across Base, Arbitrum, and BSC: wallet (public), privacy pool (shielded ZK-encrypted), Morpho vault positions (Base+Arb), and Aerodrome LP (Base only). Privacy pool decrypted client-side. Pass `chain` to scope to one chain.',
+    {
+      chain: z.enum(CHAIN_ENUM).optional().describe('Optional: scope to one chain. Default queries all 3.'),
+    },
+    async ({ chain }) => {
       try {
-        const b402 = getB402()
-        const s = await b402.status()
-        const lines: string[] = [
-          `Incognito Wallet: ${s.smartWallet}`,
-          `Deployed: ${s.deployed}`,
-          '',
-        ]
+        const targets = chain
+          ? SUPPORTED_CHAINS.filter((c) => c.name === chain)
+          : SUPPORTED_CHAINS
 
-        if (s.balances.length > 0) {
-          lines.push('Wallet:')
-          for (const b of s.balances) lines.push(`  ${b.token}: ${b.balance}`)
-        } else {
-          lines.push('Wallet: empty')
-        }
+        const reports = await Promise.all(
+          targets.map(async (c) => {
+            try {
+              const b402 = getB402(c.chainId)
+              const s = await b402.status()
+              return { chain: c.name, status: s, ok: true as const }
+            } catch (e: any) {
+              return { chain: c.name, ok: false as const, error: e.message }
+            }
+          }),
+        )
 
-        lines.push('')
-        if (s.shieldedBalances.length > 0) {
-          lines.push('Privacy Pool:')
-          for (const b of s.shieldedBalances) {
-            if (parseFloat(b.balance) > 0) lines.push(`  ${b.token}: ${b.balance}`)
+        const okReport = reports.find((r) => r.ok)
+        const sw = okReport?.ok ? okReport.status.smartWallet : '(unavailable)'
+
+        const lines: string[] = [`Incognito Wallet: ${sw}`, `(same address on all chains)`, '']
+
+        for (const r of reports) {
+          lines.push(`── ${r.chain.toUpperCase()} ──`)
+          if (!r.ok) {
+            lines.push(`  error: ${r.error}`)
+            lines.push('')
+            continue
           }
-        } else {
-          lines.push('Privacy Pool: empty')
-        }
-
-        if (s.positions.length > 0) {
+          const s = r.status
+          if (s.balances.length > 0) {
+            lines.push('  Wallet:')
+            for (const b of s.balances) lines.push(`    ${b.token}: ${b.balance}`)
+          } else {
+            lines.push('  Wallet: empty')
+          }
+          if (s.shieldedBalances.length > 0) {
+            const nonZero = s.shieldedBalances.filter((b) => parseFloat(b.balance) > 0)
+            if (nonZero.length > 0) {
+              lines.push('  Privacy Pool:')
+              for (const b of nonZero) lines.push(`    ${b.token}: ${b.balance}`)
+            } else {
+              lines.push('  Privacy Pool: empty')
+            }
+          } else {
+            lines.push('  Privacy Pool: empty')
+          }
+          if (s.positions.length > 0) {
+            lines.push('  Yield Positions:')
+            for (const p of s.positions)
+              lines.push(`    ${p.vault}: ${p.assets} (${p.apyEstimate} APY)`)
+          }
+          if (s.lpPositions.length > 0) {
+            lines.push('  LP Positions:')
+            for (const lp of s.lpPositions)
+              lines.push(`    ${lp.pool}: $${lp.usdValue} (${lp.apyEstimate} APY)`)
+          }
           lines.push('')
-          lines.push('Yield Positions:')
-          for (const p of s.positions) lines.push(`  ${p.vault}: ${p.assets} (${p.apyEstimate} APY)`)
         }
 
-        if (s.lpPositions.length > 0) {
-          lines.push('')
-          lines.push('LP Positions:')
-          for (const lp of s.lpPositions) lines.push(`  ${lp.pool}: $${lp.usdValue} (${lp.apyEstimate} APY)`)
-        }
-
-        return { content: [{ type: 'text', text: lines.join('\n') }] }
+        return { content: [{ type: 'text', text: lines.join('\n').trimEnd() }] }
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
       }
@@ -174,19 +211,20 @@ export function registerPrivacyTools(server: McpServer) {
 
   server.tool(
     'lend_privately',
-    'Deposit USDC from the privacy pool into a Morpho ERC-4626 vault to earn yield (~3-4% APY). Uses ZK proof via RelayAdapt — the vault deposit is real (Morpho on Base) but no wallet is linked. Vault shares are shielded back into the pool. Takes ~15-30 seconds.',
+    'Deposit USDC from the privacy pool into a Morpho ERC-4626 vault to earn yield. Uses ZK proof via RelayAdapt — vault deposit is real, no wallet linked. Shares shielded back into pool. Supported on Base (vaults: steakhouse, moonwell, gauntlet, steakhouse-hy) and Arbitrum (vaults: steakhouse-hy, steakhouse, gauntlet, gauntlet-prime). Takes ~15-30 seconds.',
     {
       amount: z.string().describe('Amount to lend in USDC'),
-      vault: z.string().default('steakhouse').describe('Vault: steakhouse, moonwell, gauntlet'),
+      vault: z.string().default('steakhouse-hy').describe('Vault key. Base: steakhouse | moonwell | gauntlet | steakhouse-hy. Arb: steakhouse-hy | steakhouse | gauntlet | gauntlet-prime.'),
+      chain: z.enum(MORPHO_CHAIN_ENUM).optional().default('base').describe('Chain for the lend op. Base or Arbitrum.'),
     },
-    async ({ amount, vault }) => {
+    async ({ amount, vault, chain }) => {
       try {
-        const b402 = getB402()
+        const b402 = getB402(chain)
         const result = await b402.privateLend({ token: 'USDC', amount, vault })
         return { content: [{ type: 'text', text:
-          `Private lend complete.\n` +
+          `Private lend complete on ${chain}.\n` +
           `Deposited: ${amount} USDC → ${result.vault}\n` +
-          `TX: ${basescan(result.txHash)}\n` +
+          `TX: ${explorerTxLink(b402.chainId, result.txHash)}\n` +
           `Earning yield privately. No wallet linked to vault.`
         }] }
       } catch (e: any) {
@@ -240,18 +278,19 @@ export function registerPrivacyTools(server: McpServer) {
 
   server.tool(
     'redeem_privately',
-    'Withdraw from a Morpho vault back to the privacy pool. Burns vault shares (shielded in pool), redeems underlying USDC, and shields it back. Requires that shares were deposited via lend_privately. Takes ~15-30 seconds.',
+    'Withdraw from a Morpho vault back to the privacy pool. Burns vault shares (shielded in pool), redeems underlying USDC, shields back. Requires shares deposited via lend_privately on the same chain. Supported on Base + Arbitrum. Takes ~15-30 seconds.',
     {
-      vault: z.string().default('steakhouse').describe('Vault to redeem from'),
+      vault: z.string().default('steakhouse-hy').describe('Vault key on the chosen chain.'),
+      chain: z.enum(MORPHO_CHAIN_ENUM).optional().default('base').describe('Chain for the redeem op. Must match where lend_privately was called.'),
     },
-    async ({ vault }) => {
+    async ({ vault, chain }) => {
       try {
-        const b402 = getB402()
+        const b402 = getB402(chain)
         const result = await b402.privateRedeem({ vault })
         return { content: [{ type: 'text', text:
-          `Private redeem complete.\n` +
+          `Private redeem complete on ${chain}.\n` +
           `Received: ${result.assetsReceived} USDC → privacy pool\n` +
-          `TX: ${basescan(result.txHash)}`
+          `TX: ${explorerTxLink(b402.chainId, result.txHash)}`
         }] }
       } catch (e: any) {
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }

@@ -16,7 +16,7 @@
 
 import { ethers } from 'ethers'
 import { isWalletDeployed } from './wallet/wallet-factory'
-import { MORPHO_VAULTS, resolveVault, ERC4626_INTERFACE } from './lend/morpho-vaults'
+import { MORPHO_VAULTS, MORPHO_VAULTS_BY_CHAIN, getMorphoVaults, resolveVault, ERC4626_INTERFACE } from './lend/morpho-vaults'
 import { AERODROME_POOLS } from './lp/aerodrome-pools'
 import { PERPS_MARKETS } from './trade/synthetix-perps'
 import { BASE_TOKENS, BASE_CONTRACTS } from './types'
@@ -24,6 +24,7 @@ import {
   B402_CHAINS,
   getContractsForChain,
   getRailgunNetworkName,
+  getRelayAdaptAddress,
   type ChainContracts,
 } from './config/chains'
 
@@ -559,7 +560,14 @@ export class B402 {
 
     const settle = (await settleRes.json()) as SettleResponse
     if (!settle.success) {
-      throw new Error(`Transaction failed: ${settle.errorReason || 'unknown'}`)
+      const detail = settle.userOpHash ? ` (userOpHash: ${settle.userOpHash})` : ''
+      // Debug: dump the full UserOp so we can simulate offline
+      if (process.env.B402_DEBUG_USEROP) {
+        console.error('[b402] UserOp that failed:', JSON.stringify(signedUserOp, null, 2))
+        console.error('[b402] chainId:', this.chainId)
+        console.error('[b402] entryPoint:', this.contracts.ENTRY_POINT)
+      }
+      throw new Error(`Transaction failed: ${settle.errorReason || 'unknown'}${detail}`)
     }
 
     this.emit({ type: 'done', title: 'Confirmed', message: `TX: ${settle.txHash}` })
@@ -628,11 +636,10 @@ export class B402 {
     }
   }
 
-  /** Deposit tokens into a Morpho ERC-4626 vault. Base only. */
+  /** Deposit tokens into a Morpho ERC-4626 vault. Supported on Base + Arbitrum. */
   async lend(params: LendParams): Promise<LendResult> {
-    this.requireBase('lend')
     const token = this.resolveToken(params.token)
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
     await this.init()
     const amount = ethers.parseUnits(params.amount, token.decimals)
 
@@ -646,10 +653,9 @@ export class B402 {
     return { txHash: result.txHash, amount: params.amount, vault: vault.name }
   }
 
-  /** Withdraw from a Morpho vault. Omit shares to redeem all. Base only. */
+  /** Withdraw from a Morpho vault. Omit shares to redeem all. Supported on Base + Arbitrum. */
   async redeem(params: RedeemParams = {}): Promise<RedeemResult> {
-    this.requireBase('redeem')
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
     await this.init()
     const vaultContract = new ethers.Contract(vault.address, ERC4626_INTERFACE, this.provider)
 
@@ -1670,12 +1676,13 @@ export class B402 {
       } catch { return null }
     })
 
-    // Morpho lending positions (Base-only for now)
-    const isBase = this.chainId === 8453
+    // Morpho lending positions — chain-aware (Base + Arbitrum supported).
+    const chainVaults = getMorphoVaults(this.chainId)
+    const hasMorpho = Object.keys(chainVaults).length > 0
     const { fetchAllVaultMetrics, formatAPY, formatTVL } = await import('./lend/morpho-api')
 
-    const positionPromises = isBase
-      ? Object.entries(MORPHO_VAULTS).map(async ([name, vault]) => {
+    const positionPromises = hasMorpho
+      ? Object.entries(chainVaults).map(async ([name, vault]) => {
           try {
             const contract = new ethers.Contract(vault.address, ERC4626_INTERFACE, this.provider)
             const shares: bigint = await contract.balanceOf(this.wallet)
@@ -1690,7 +1697,7 @@ export class B402 {
       Promise.all(balancePromises),
       Promise.all(positionPromises),
       this.getShieldedBalances(),
-      isBase ? fetchAllVaultMetrics(this.chainId) : Promise.resolve({} as Record<string, any>),
+      hasMorpho ? fetchAllVaultMetrics(this.chainId).catch(() => ({} as Record<string, any>)) : Promise.resolve({} as Record<string, any>),
     ])
 
     const positions = rawPositions
@@ -1708,6 +1715,7 @@ export class B402 {
       })
 
     // Read LP positions (Aerodrome is Base-only)
+    const isBase = this.chainId === 8453
     const { AERODROME_POOLS, GAUGE_ABI: G_ABI, POOL_ABI: P_ABI, AERO_TOKEN } = await import('./lp/aerodrome-pools')
     const { fetchAllPoolMetrics, formatAPY: fmtAPY, formatTVL: fmtTVL } = await import('./lp/aerodrome-api')
 
@@ -2515,15 +2523,14 @@ export class B402 {
    * Share tokens (vault address as ERC20) are shielded back into the pool.
    */
   async privateLend(params: PrivateLendParams): Promise<PrivateLendResult> {
-    this.requireBase('privateLend')
     const token = this.resolveToken(params.token || 'USDC')
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
+    const relayAdapt = getRelayAdaptAddress(this.chainId)
     await this.init()
     const amount = ethers.parseUnits(params.amount, token.decimals)
 
     this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Building', message: 'Building vault deposit calls' })
 
-    const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
     const erc20 = new ethers.Interface(ERC20_ABI)
 
     // approve(vault, amount) + vault.deposit(amount, RelayAdapt)
@@ -2535,7 +2542,7 @@ export class B402 {
       },
       {
         to: vault.address,
-        data: ERC4626_INTERFACE.encodeFunctionData('deposit', [amount, RELAY_ADAPT_ADDRESS]),
+        data: ERC4626_INTERFACE.encodeFunctionData('deposit', [amount, relayAdapt]),
         value: '0',
       },
     ]
@@ -2560,13 +2567,12 @@ export class B402 {
    * USDC is shielded back into the pool.
    */
   async privateRedeem(params: PrivateRedeemParams = {}): Promise<PrivateRedeemResult> {
-    this.requireBase('privateRedeem')
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
+    const relayAdapt = getRelayAdaptAddress(this.chainId)
+    const usdc = this.resolveToken('USDC')
     await this.init()
 
     this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Scanning', message: 'Checking shielded vault shares' })
-
-    const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
 
     // Determine shares amount — from params or scan pool for vault share balance
     let shares: bigint
@@ -2596,7 +2602,7 @@ export class B402 {
     const userCalls = [
       {
         to: vault.address,
-        data: ERC4626_INTERFACE.encodeFunctionData('redeem', [shares, RELAY_ADAPT_ADDRESS, RELAY_ADAPT_ADDRESS]),
+        data: ERC4626_INTERFACE.encodeFunctionData('redeem', [shares, relayAdapt, relayAdapt]),
         value: '0',
       },
     ]
@@ -2605,8 +2611,8 @@ export class B402 {
       tokenAddress: vault.address,  // Unshield SHARE tokens
       amount: shares,
       userCalls,
-      // Shield USDC back to pool
-      shieldTokens: [{ tokenAddress: BASE_TOKENS.USDC.address }],
+      // Shield USDC back to pool — chain-aware (USDC differs per chain).
+      shieldTokens: [{ tokenAddress: usdc.address }],
       stepOffset: 1,
       totalSteps: 6,
     })
@@ -2878,23 +2884,31 @@ export class B402 {
     step(3, 'Building', 'Building cross-contract calls')
 
     const {
-      RELAY_ADAPT_ADDRESS,
       buildRelayShieldRequests,
       computeAdaptParams,
       buildOrderedCalls,
       buildRelayCalldata,
     } = await import('./privacy/lib/relay-adapt')
+    const relayAdaptAddress = getRelayAdaptAddress(this.chainId)
 
     // Ensure input token is also in shield list (re-shield any remainder)
+    // Auto-add input token to shield list so leftover dust comes back to the
+    // pool — but only on Base. The Arb B402 Railgun fork reverts on 0-balance
+    // shields, so for fully-consuming flows (privateLend / privateSwap) we'd
+    // get a CallFailed at the shield step. Callers that want input-token
+    // re-shield on Arb must include it in `shieldTokens` explicitly.
     const allShieldTokens = [...shieldTokens]
-    if (!allShieldTokens.some(s => s.tokenAddress.toLowerCase() === tokenAddress.toLowerCase())) {
+    if (
+      this.chainId === 8453 &&
+      !allShieldTokens.some((s) => s.tokenAddress.toLowerCase() === tokenAddress.toLowerCase())
+    ) {
       allShieldTokens.push({ tokenAddress })
     }
 
     const { shieldCallData } = await buildRelayShieldRequests(railgunAddress, allShieldTokens)
 
-    // Build ordered calls: user calls + shield call at end
-    const orderedCalls = buildOrderedCalls(userCalls, shieldCallData, tokenAddress, allShieldTokens)
+    // Build ordered calls: user calls + shield call at end (chain-specific RelayAdapt)
+    const orderedCalls = buildOrderedCalls(userCalls, shieldCallData, tokenAddress, allShieldTokens, relayAdaptAddress)
 
     // ── Step 4: Compute adaptParams + build proof ─────────────────────
     step(4, 'ZK proof', 'Generating zero-knowledge proof (5-30s)')
@@ -2935,13 +2949,13 @@ export class B402 {
       throw new Error('Merkle proof verification failed')
     }
 
-    // Build proof inputs — unshield full UTXO to RelayAdapt
+    // Build proof inputs — unshield full UTXO to RelayAdapt (chain-specific)
     const proofInputs = buildUnshieldProofInputs({
       utxo,
       nullifyingKey: keys.nullifyingKey,
       spendingKeyPair: keys.spendingKeyPair,
       unshieldAmount: utxo.note.value, // Full UTXO value
-      recipientAddress: RELAY_ADAPT_ADDRESS,
+      recipientAddress: relayAdaptAddress,
       tokenAddress,
     })
 
@@ -2952,7 +2966,7 @@ export class B402 {
       chainId,
       treeNumber: utxo.tree,
       outputCount: 1,
-      adaptContract: RELAY_ADAPT_ADDRESS,
+      adaptContract: relayAdaptAddress,
       adaptParams: adaptParamsHash,
     })
 
@@ -2967,12 +2981,12 @@ export class B402 {
       proofResult,
       treeNumber: utxo.tree,
       tokenAddress,
-      recipientAddress: RELAY_ADAPT_ADDRESS,
+      recipientAddress: relayAdaptAddress,
       unshieldAmount: utxo.note.value,
       chainId,
     })
 
-    const relayTx = buildRelayCalldata(txStruct, actionData)
+    const relayTx = buildRelayCalldata(txStruct, actionData, relayAdaptAddress)
 
     // ── Step 6: Submit as UserOp ─────────────────────────────────────
     step(6, 'Executing', 'Submitting via facilitator')

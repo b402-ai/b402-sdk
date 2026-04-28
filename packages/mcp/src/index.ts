@@ -33,7 +33,7 @@ if (cmd === '--claude' || cmd === 'install') {
   console.log(`  Incognito Wallet:   ${wallet.smartWallet}`)
   console.log(`  Incognito EOA:  ${wallet.incognitoEOA}`)
   console.log(``)
-  console.log(`  Fund with USDC on Base:`)
+  console.log(`  Fund with USDC — same address on Base, Arbitrum, BSC:`)
   console.log(`  → Send USDC to ${wallet.smartWallet}`)
   console.log(`  → Or: https://b402.ai/fund?address=${wallet.smartWallet}`)
   console.log(``)
