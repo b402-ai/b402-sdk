@@ -89,7 +89,7 @@ async function main() {
     'b402_balance', 'b402_create_invoice', 'b402_pay', 'pay_via_b402',
     'check_pool_balance', 'get_swap_quote', 'private_swap',
     'lend_privately', 'redeem_privately', 'shield_usdc', 'run_strategy',
-    'cross_chain_privately',
+    'cross_chain_privately', 'cross_chain_status',
   ]
   const missing = expected.filter((n) => !tools.some((t) => t.name === n))
   if (missing.length) {

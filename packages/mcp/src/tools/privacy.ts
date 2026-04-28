@@ -298,6 +298,32 @@ export function registerPrivacyTools(server: McpServer) {
   )
 
   server.tool(
+    'cross_chain_status',
+    'Poll the status of a cross-chain transfer kicked off via cross_chain_privately. Returns pending | done | failed plus the destination-chain tx hash once the bridge fills. Pass the source-chain tx hash returned by the original call.',
+    {
+      txHash: z.string().describe('Source-chain tx hash returned by cross_chain_privately'),
+    },
+    async ({ txHash }) => {
+      log('tool=cross_chain_status start', { txHash })
+      try {
+        const b402 = getB402()
+        const result = await b402.getCrossChainStatus(txHash)
+        log('tool=cross_chain_status ok', { status: result.status, dest: result.destTxHash })
+        const lines = [
+          `Status:   ${result.status}`,
+          result.substatus ? `Sub:      ${result.substatus}` : null,
+          `Source:   ${result.srcTxHash ?? txHash}`,
+          result.destTxHash ? `Dest TX:  ${result.destTxHash}` : 'Dest TX:  (not filled yet)',
+        ].filter((l): l is string => l !== null)
+        return { content: [{ type: 'text', text: lines.join('\n') }] }
+      } catch (e: any) {
+        log('tool=cross_chain_status error', { message: e.message })
+        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
+      }
+    }
+  )
+
+  server.tool(
     'redeem_privately',
     'Withdraw a yield position back to the privacy pool. Works for both Morpho vault shares and Aave V3 aToken positions — pass the same `protocol` you used for lend_privately. Burns the receipt token (shielded in pool), redeems underlying USDC, shields back. Supported on Base + Arbitrum. Takes ~15-30 seconds.',
     {

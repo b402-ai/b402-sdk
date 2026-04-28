@@ -2798,7 +2798,7 @@ export class B402 {
       message: `Bridging ${params.amount} ${fromToken.symbol} (${sourceChainConfig.name}) -> ${toTokenSymbol} (${destChainConfig.name})`,
     })
 
-    const lifi = new LiFiProvider(params.lifiApiKey)
+    const lifi = new LiFiProvider(params.lifiApiKey ?? process.env.LIFI_API_KEY)
     const quote = await lifi.getBridgeQuote({
       fromChainId: sourceChainConfig.chainId,
       toChainId: destChainConfig.chainId,
@@ -2856,6 +2856,23 @@ export class B402 {
       destinationAddress: params.destinationAddress,
       estimatedDurationSec: quote.estimatedDurationSec,
     }
+  }
+
+  /**
+   * Poll the LiFi /status endpoint for a cross-chain transfer kicked off
+   * via `privateCrossChain`. Returns a normalized `pending | done | failed`
+   * status, the destination tx hash once filled, and the raw substatus
+   * string when LiFi provides one.
+   *
+   * Env: `LIFI_API_KEY` (optional) — recommended for higher rate limits.
+   */
+  async getCrossChainStatus(
+    srcTxHash: string,
+    opts: { lifiApiKey?: string } = {},
+  ): Promise<import('./bridge/lifi-provider').LiFiStatus> {
+    const { LiFiProvider } = await import('./bridge/lifi-provider')
+    const lifi = new LiFiProvider(opts.lifiApiKey ?? process.env.LIFI_API_KEY)
+    return lifi.getStatus(srcTxHash)
   }
 
   /**
