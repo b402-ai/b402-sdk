@@ -1802,7 +1802,7 @@ export class B402 {
     const { fetchAllPoolMetrics, getFallbackAPY: getFallbackLPAPY } = await import('./lp/aerodrome-api')
 
     const [morphoMetrics, poolMetrics] = await Promise.all([
-      fetchAllVaultMetrics(8453),
+      fetchAllVaultMetrics(this.chainId),
       fetchAllPoolMetrics(this.provider),
     ])
 
