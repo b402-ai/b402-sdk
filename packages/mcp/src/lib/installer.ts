@@ -6,12 +6,16 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir, platform } from 'os'
 import { execSync } from 'child_process'
+import { getOwnVersion } from './version.js'
 
 const home = homedir()
 
+// Pin the host config to the version of MCP that was just executed, not
+// to '@latest'. Running `npx b402-mcp@next --claude` then has the host
+// spawn the same prerelease, not the stable tag.
 const MCP_ENTRY = {
   command: 'npx',
-  args: ['-y', 'b402-mcp@latest'],
+  args: ['-y', `b402-mcp@${getOwnVersion()}`],
 }
 
 function getBaseDir(): string {
@@ -100,14 +104,29 @@ export function installToAllClients(): string[] {
       const config = readJsonSafe(client.configPath) || {}
       if (!config.mcpServers) config.mcpServers = {}
 
-      if (config.mcpServers.b402) {
-        results.push(`${client.name} (already configured)`)
+      const existing = config.mcpServers.b402
+      // Upgrade-friendly: if the existing entry is the npx-managed b402-mcp
+      // launcher, rewrite it so a `b402-mcp@<newer> --claude` always points
+      // hosts at the freshly-installed version. Custom command paths
+      // (e.g. local-dev `node /path/to/dist/index.js`) are left untouched.
+      const isManagedEntry =
+        existing &&
+        existing.command === 'npx' &&
+        Array.isArray(existing.args) &&
+        existing.args.some((a: string) => typeof a === 'string' && a.startsWith('b402-mcp'))
+
+      if (existing && !isManagedEntry) {
+        results.push(`${client.name} (custom config — left as-is)`)
         continue
       }
 
-      config.mcpServers.b402 = MCP_ENTRY
+      // Preserve any env vars the user set on a previous install.
+      const preservedEnv = existing?.env
+      config.mcpServers.b402 = preservedEnv
+        ? { ...MCP_ENTRY, env: preservedEnv }
+        : MCP_ENTRY
       writeJsonSafe(client.configPath, config)
-      results.push(`${client.name} ✓`)
+      results.push(existing ? `${client.name} ↑ updated` : `${client.name} ✓`)
     } catch (err: any) {
       results.push(`${client.name} (error: ${err.message?.slice(0, 50)})`)
     }
@@ -130,7 +149,7 @@ export function installToAllClients(): string[] {
       if (content.includes('[mcp_servers.b402]')) {
         results.push('Codex (already configured)')
       } else {
-        const tomlEntry = `\n[mcp_servers.b402]\ncommand = "npx"\nargs = [ "-y", "b402-mcp@latest" ]\n`
+        const tomlEntry = `\n[mcp_servers.b402]\ncommand = "npx"\nargs = [ "-y", "b402-mcp@${getOwnVersion()}" ]\n`
         writeFileSync(codexConfig, content + tomlEntry)
         results.push('Codex ✓')
       }

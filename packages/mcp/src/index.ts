@@ -138,10 +138,11 @@ import { registerCompatibilityTools } from './tools/compat.js'
 import { registerCreditTools } from './tools/credit.js'
 import { registerPrivacyTools } from './tools/privacy.js'
 import { registerStrategyTools } from './tools/strategy.js'
+import { getOwnVersion } from './lib/version.js'
 
 const server = new McpServer({
   name: 'b402',
-  version: '0.5.0',
+  version: getOwnVersion(),
   description: [
     'b402 — Private DeFi execution for AI agents on Base.',
     '',
