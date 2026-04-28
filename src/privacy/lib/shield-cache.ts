@@ -19,6 +19,8 @@ export interface CachedShield {
   amount: string
   indexed: boolean
   timestamp: number
+  /** Chain the shield was created on. Optional for back-compat with pre-multichain caches. */
+  chainId?: number
   commitmentHash?: string
   treeNumber?: any
   position?: any
@@ -32,6 +34,11 @@ export interface CachedShield {
 
 const CACHE_DIR = join(homedir(), '.b402')
 const CACHE_FILE = join(CACHE_DIR, 'shield-cache.json')
+
+// Bump when the file shape changes in a way that invalidates older entries.
+// On read, files without this version are wiped — they predate chainId
+// tagging and would cause cross-chain leaks if surfaced.
+const CACHE_VERSION = 2
 
 // In-memory cache backed by disk
 let cache = new Map<string, CachedShield[]>()
@@ -48,12 +55,15 @@ function ensureLoaded(): void {
   loaded = true
   if (testMode) return
   try {
-    if (existsSync(CACHE_FILE)) {
-      const data = JSON.parse(readFileSync(CACHE_FILE, 'utf-8'))
-      for (const [key, shields] of Object.entries(data)) {
+    if (!existsSync(CACHE_FILE)) return
+    const raw = JSON.parse(readFileSync(CACHE_FILE, 'utf-8'))
+    if (raw && typeof raw === 'object' && raw.__version === CACHE_VERSION && raw.entries) {
+      for (const [key, shields] of Object.entries(raw.entries)) {
         cache.set(key, shields as CachedShield[])
       }
     }
+    // else: legacy/unversioned file — leave cache empty so no stale entries
+    // get returned. Backend indexer covers any actual shields the user has.
   } catch {
     // Corrupted file — start fresh
     cache = new Map()
@@ -66,11 +76,14 @@ function persist(): void {
     if (!existsSync(CACHE_DIR)) {
       mkdirSync(CACHE_DIR, { recursive: true })
     }
-    const obj: Record<string, CachedShield[]> = {}
+    const entries: Record<string, CachedShield[]> = {}
     for (const [key, shields] of cache.entries()) {
-      obj[key] = shields
+      entries[key] = shields
     }
-    writeFileSync(CACHE_FILE, JSON.stringify(obj, null, 2))
+    writeFileSync(
+      CACHE_FILE,
+      JSON.stringify({ __version: CACHE_VERSION, entries }, null, 2),
+    )
   } catch {
     // Best-effort persistence
   }
@@ -82,9 +95,21 @@ export function getCachedShield(key: string): CachedShield | null {
   return shields?.[0] ?? null
 }
 
-export function getCachedShields(walletKey: string): CachedShield[] {
+/**
+ * Read cached shields, scoped to one chain.
+ *
+ * The cache is a fresh-shield buffer — the chain-scoped backend API is the
+ * source of truth for shield commitments. Cache entries written before
+ * `chainId` tagging are dropped on first read after upgrade (see
+ * `ensureLoaded`'s schema-version migration); we never guess their chain
+ * from on-chain data because addresses (token, vault) are not unique across
+ * chains.
+ */
+export function getCachedShields(walletKey: string, chainId?: number): CachedShield[] {
   ensureLoaded()
-  return cache.get(walletKey.toLowerCase()) || []
+  const all = cache.get(walletKey.toLowerCase()) || []
+  if (chainId === undefined) return all
+  return all.filter((s) => s.chainId === chainId)
 }
 
 export function setCachedShield(key: string, entry: CachedShield): void {

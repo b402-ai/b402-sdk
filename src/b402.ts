@@ -1607,13 +1607,16 @@ export class B402 {
             commitmentHash = ethers.keccak256(ethers.solidityPacked(['bytes32', 'bytes32', 'uint256'], [commitment.npk, tokenID, commitment.value]))
           }
 
-          // Cache under the smart wallet address so getShieldedBalances() finds it
+          // Cache under the smart wallet address so getShieldedBalances() finds it.
+          // Tag with chainId — smart wallet address is the same on every chain
+          // (CREATE2 deterministic), so without this Base shields leak into Arb queries.
           setCachedShield(this.wallet.toLowerCase(), {
             txHash,
             tokenAddress,
             amount: commitment.value.toString(),
             indexed: false,
             timestamp: Date.now(),
+            chainId: this.chainId,
             commitmentHash,
             treeNumber,
             position,
