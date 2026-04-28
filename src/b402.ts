@@ -2897,17 +2897,11 @@ export class B402 {
     } = await import('./privacy/lib/relay-adapt')
     const relayAdaptAddress = getRelayAdaptAddress(this.chainId)
 
-    // Ensure input token is also in shield list (re-shield any remainder)
-    // Auto-add input token to shield list so leftover dust comes back to the
-    // pool — but only on Base. The Arb B402 Railgun fork reverts on 0-balance
-    // shields, so for fully-consuming flows (privateLend / privateSwap) we'd
-    // get a CallFailed at the shield step. Callers that want input-token
-    // re-shield on Arb must include it in `shieldTokens` explicitly.
+    // Always re-shield the input token alongside caller-specified outputs.
+    // Unshield uses the full UTXO value, so any amount above what userCalls
+    // consume is left in RelayAdapt and would be stranded otherwise.
     const allShieldTokens = [...shieldTokens]
-    if (
-      this.chainId === 8453 &&
-      !allShieldTokens.some((s) => s.tokenAddress.toLowerCase() === tokenAddress.toLowerCase())
-    ) {
+    if (!allShieldTokens.some((s) => s.tokenAddress.toLowerCase() === tokenAddress.toLowerCase())) {
       allShieldTokens.push({ tokenAddress })
     }
 
