@@ -16,18 +16,27 @@ if (cmd === '--claude' || cmd === 'install') {
 
   let wallet = readWallet()
 
+  console.log('\nb402 — Private DeFi for AI agents\n')
+
   if (providedKey) {
-    console.log('\nb402 — Private DeFi for AI agents\n')
-    console.log('Importing your wallet...\n')
-    wallet = await importWallet(providedKey)
-    console.log(`  Wallet imported and saved to ~/.b402/wallet.json\n`)
+    if (wallet) {
+      console.log(`  Existing wallet on disk: ${wallet.smartWallet}`)
+      console.log(`  Importing key for:       (computing address…)\n`)
+    } else {
+      console.log('Importing your wallet...\n')
+    }
+    try {
+      wallet = await importWallet(providedKey)
+    } catch (e: any) {
+      console.error(`\n  Refusing to overwrite ~/.b402/wallet.json:\n  ${e.message}\n`)
+      process.exit(1)
+    }
+    console.log(`  Wallet imported: ${wallet.smartWallet}`)
+    console.log(`  Saved to ~/.b402/wallet.json\n`)
   } else if (!wallet) {
-    console.log('\nb402 — Private DeFi for AI agents\n')
     console.log('Creating your private wallet...\n')
     wallet = await createWallet()
     console.log(`  Wallet created and saved to ~/.b402/wallet.json\n`)
-  } else {
-    console.log('\nb402 — Private DeFi for AI agents\n')
   }
 
   console.log(`  Incognito Wallet:   ${wallet.smartWallet}`)
@@ -78,10 +87,16 @@ Core payment tools + private DeFi tools. ZK proofs. Gasless. Base mainnet.
 Works with Claude, Cursor, Windsurf, Cline — any MCP client.
 
 Usage:
-  b402-mcp --claude         Create wallet + install into Claude Code
-  b402-mcp install          Same as --claude
-  b402-mcp status           Show wallet info
-  b402-mcp --help           Show this help
+  b402-mcp --claude              Create wallet + install into Claude Code
+  b402-mcp --claude --key 0x...  Import an existing key
+  b402-mcp install               Same as --claude
+  b402-mcp status                Show wallet info
+  b402-mcp --help                Show this help
+
+Wallet safety:
+  --key refuses to overwrite an existing wallet.json with a different key.
+  To intentionally replace, set B402_FORCE_WALLET_RESET=1 — the prior file
+  is preserved as wallet.json.bak.<unix-ts>.
 
 Tools:
   b402_balance        Payment balance (credits or wallet/pool)
