@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
-import { getB402 } from '../lib/b402-client.js'
+import { getB402, SUPPORTED_CHAINS } from '../lib/b402-client.js'
 import { sequencer } from '../lib/sequencer-client.js'
+import { log } from '../lib/logger.js'
 
 const PAYMENT_TOKEN = 'USDC'
 const PAYMENT_REQUIRED_HEADERS = ['x-payment-required', 'payment-required']
@@ -78,11 +79,13 @@ async function extractPaymentRequirement(response: Response): Promise<X402Requir
 export function registerCompatibilityTools(server: McpServer) {
   server.tool(
     'b402_balance',
-    'Check b402 balance for payments. Reads sequencer credits when `agentId` is provided, otherwise reads wallet + shielded balances.',
+    'Full b402 balance read across Base + Arbitrum + BSC: wallet USDC, shielded USDC, every shielded vault-share token with exact decimal balance, and active vault positions with APY. With `agentId` returns sequencer credits. Pass `chain` to scope to one chain. IMPORTANT: When relaying this tool result to the user, render the response text VERBATIM as a code block — do NOT summarize, group, or hide rows. The user is integrating against this and needs every line and exact number visible.',
     {
       agentId: z.string().optional().describe('Optional sequencer agent id for credit balance lookup'),
+      chain: z.enum(['base', 'arbitrum', 'bsc']).optional().describe('Optional: scope to a single chain. Default queries all 3.'),
     },
-    async ({ agentId }) => {
+    async ({ agentId, chain }) => {
+      log('tool=b402_balance start', { agentId, chain: chain ?? 'all' })
       try {
         if (agentId) {
           const bal = await sequencer.getBalance(agentId)
@@ -99,21 +102,78 @@ export function registerCompatibilityTools(server: McpServer) {
           }
         }
 
-        const b402 = getB402()
-        const status = await b402.status()
-        const walletUsdc = status.balances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
-        const poolUsdc = status.shieldedBalances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+        // Wallet/pool balance — multi-chain (or scoped to one if `chain` given).
+        const targets = chain
+          ? SUPPORTED_CHAINS.filter((c) => c.name === chain)
+          : SUPPORTED_CHAINS
 
-        return {
-          content: [{
-            type: 'text',
-            text:
-              `b402 wallet balance\n` +
-              `Incognito wallet: ${status.smartWallet}\n` +
-              `Wallet ${PAYMENT_TOKEN}: ${walletUsdc}\n` +
-              `Shielded ${PAYMENT_TOKEN}: ${poolUsdc}`,
-          }],
+        const results = await Promise.all(
+          targets.map(async (c) => {
+            try {
+              const b402 = getB402(c.chainId)
+              const status = await b402.status()
+              const walletUsdc =
+                status.balances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+              const poolUsdc =
+                status.shieldedBalances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+              // Vault shares (any non-USDC shielded balance with a positive amount)
+              const vaultShares = status.shieldedBalances
+                .filter((b) => b.token !== PAYMENT_TOKEN && parseFloat(b.balance) > 0)
+                .map((b) => ({ token: b.token, balance: b.balance }))
+              const positions = status.positions.map((p) => ({
+                vault: p.vault,
+                assets: p.assets,
+                apy: p.apyEstimate,
+              }))
+              return {
+                chain: c.name,
+                smartWallet: status.smartWallet,
+                walletUsdc,
+                poolUsdc,
+                vaultShares,
+                positions,
+                ok: true as const,
+              }
+            } catch (e: any) {
+              return { chain: c.name, ok: false as const, error: e.message }
+            }
+          }),
+        )
+
+        // Smart wallet address is the same on all chains (Nexus CREATE2 deterministic).
+        const sw = results.find((r) => r.ok)?.smartWallet ?? '(unavailable)'
+
+        // Strict tabular text — agents/LLMs relay tables more reliably than prose.
+        const lines: string[] = [
+          'b402 balance',
+          `wallet: ${sw}  (same address on Base, Arbitrum, BSC)`,
+          '',
+          'chain     | walletUSDC | poolUSDC',
+          '----------+------------+----------',
+        ]
+        for (const r of results) {
+          if (!r.ok) {
+            lines.push(`${r.chain.padEnd(9)} | ERROR: ${r.error}`)
+            continue
+          }
+          lines.push(
+            `${r.chain.padEnd(9)} | ${r.walletUsdc.padEnd(10)} | ${r.poolUsdc}`,
+          )
         }
+        // Then a per-chain section listing each shielded share + position with full precision.
+        for (const r of results) {
+          if (!r.ok) continue
+          if (r.vaultShares.length === 0 && r.positions.length === 0) continue
+          lines.push('')
+          lines.push(`-- ${r.chain} shielded vault shares + positions --`)
+          for (const s of r.vaultShares) {
+            lines.push(`${r.chain.padEnd(9)}  shielded ${s.token}: ${s.balance}`)
+          }
+          for (const p of r.positions) {
+            lines.push(`${r.chain.padEnd(9)}  position ${p.vault}: ${p.assets} (APY ${p.apy})`)
+          }
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] }
       } catch (e: any) {
         return {
           content: [{ type: 'text', text: `Error: ${e.message}` }],

@@ -372,7 +372,7 @@ export async function fetchSpendableUTXOs(
   const { shields: apiShields } = await fetchCommitmentsByEOA(apiUrl, signerAddress, undefined, chainId)
 
   // Step 1b: Get shields from local cache (critical for UserOp shields)
-  const cachedShields = getCachedShields(signerAddress)
+  const cachedShields = getCachedShields(signerAddress, chainId)
 
   // Merge API shields with cached shields, deduplicating by position+treeNumber
   const seenPositions = new Set<string>()
@@ -566,7 +566,7 @@ export async function fetchSpendableUTXOsLightweight(
   // Step 1b: Get shields from local cache (critical for UserOp shields)
   // UserOp shields are indexed by bundler address on backend, not user EOA
   // So we need to check local cache first
-  const cachedShields = getCachedShields(signerAddress)
+  const cachedShields = getCachedShields(signerAddress, chainId)
 
   // Merge API shields with cached shields, deduplicating by position+treeNumber
   const seenPositions = new Set<string>()

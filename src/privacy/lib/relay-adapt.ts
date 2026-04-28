@@ -139,6 +139,7 @@ export function computeAdaptParams(
 export function buildRelayCalldata(
   transactionStruct: RailgunTransactionStruct,
   actionData: ActionData,
+  relayAdaptAddress: string = RELAY_ADAPT_ADDRESS,
 ): { to: string; data: string } {
   const data = relayAdaptInterface.encodeFunctionData('relay', [
     [transactionStruct],  // _transactions array (1 transaction)
@@ -146,7 +147,7 @@ export function buildRelayCalldata(
   ])
 
   return {
-    to: RELAY_ADAPT_ADDRESS,
+    to: relayAdaptAddress,
     data,
   }
 }
@@ -162,6 +163,7 @@ export function buildOrderedCalls(
   shieldCallData: string,
   inputTokenAddress: string,
   shieldTokens: Array<{ tokenAddress: string }>,
+  relayAdaptAddress: string = RELAY_ADAPT_ADDRESS,
 ): Array<{ to: string; data: string; value: bigint }> {
   const orderedCalls = [
     ...userCalls.map(c => ({
@@ -170,7 +172,7 @@ export function buildOrderedCalls(
       value: c.value ? BigInt(c.value) : 0n,
     })),
     // Shield call at the end — shields all output tokens back to pool
-    { to: RELAY_ADAPT_ADDRESS, data: shieldCallData, value: 0n },
+    { to: relayAdaptAddress, data: shieldCallData, value: 0n },
   ]
 
   return orderedCalls

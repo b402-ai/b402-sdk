@@ -31,20 +31,21 @@ export interface AggregatorQuote {
 
 /**
  * Get a swap quote from the Odos aggregator.
- * Free, no API key needed. Routes across all DEXes on Base.
+ * Free, no API key needed. Routes across all DEXes on the requested chain.
  */
 export async function getAggregatorQuote(
   tokenIn: string,
   tokenOut: string,
   amountIn: bigint,
-  slippagePercent = 0.5,
   userAddr: string,
+  chainId: number,
+  slippagePercent = 0.5,
 ): Promise<AggregatorQuote> {
   const response = await fetch(ODOS_QUOTE_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      chainId: 8453,
+      chainId,
       inputTokens: [{ tokenAddress: tokenIn, amount: amountIn.toString() }],
       outputTokens: [{ tokenAddress: tokenOut, proportion: 1 }],
       slippageLimitPercent: slippagePercent,

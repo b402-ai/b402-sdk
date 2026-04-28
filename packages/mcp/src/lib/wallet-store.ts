@@ -3,14 +3,20 @@
  *
  * Generates, stores, and reads the private key for the MCP server.
  * Priority: WORKER_PRIVATE_KEY env var > ~/.b402/wallet.json > null
+ *
+ * Overwrite policy: createWallet() and importWallet() refuse to overwrite an
+ * existing wallet.json with a different key unless B402_FORCE_WALLET_RESET=1.
+ * When forced, the prior file is preserved as wallet.json.bak.<unix-ts> so
+ * repeated overwrites cannot destroy history.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-const B402_DIR = join(homedir(), '.b402')
-const WALLET_FILE = join(B402_DIR, 'wallet.json')
+// Resolve paths lazily so HOME-env overrides work in tests.
+function getB402Dir(): string { return join(homedir(), '.b402') }
+function getWalletFile(): string { return join(getB402Dir(), 'wallet.json') }
 
 export interface WalletConfig {
   privateKey: string
@@ -21,19 +27,21 @@ export interface WalletConfig {
 }
 
 function ensureDir() {
-  if (!existsSync(B402_DIR)) {
-    mkdirSync(B402_DIR, { recursive: true, mode: 0o700 })
+  const dir = getB402Dir()
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
   }
 }
 
 export function walletExists(): boolean {
-  return existsSync(WALLET_FILE)
+  return existsSync(getWalletFile())
 }
 
 export function readWallet(): WalletConfig | null {
-  if (!existsSync(WALLET_FILE)) return null
+  const file = getWalletFile()
+  if (!existsSync(file)) return null
   try {
-    return JSON.parse(readFileSync(WALLET_FILE, 'utf8'))
+    return JSON.parse(readFileSync(file, 'utf8'))
   } catch {
     return null
   }
@@ -47,12 +55,78 @@ export function getPrivateKey(): string | null {
 }
 
 /**
+ * Guard against silent wallet.json overwrites.
+ *
+ * - `desiredKey === undefined` (createWallet path): refuse if a wallet exists.
+ * - `desiredKey !== undefined` (importWallet path): if the existing wallet's
+ *   key matches, return it (idempotent). If it differs (or the file is
+ *   unreadable), refuse — unless B402_FORCE_WALLET_RESET=1, in which case the
+ *   prior file is copied to wallet.json.bak.<unix-ts> before the caller writes.
+ *
+ * Returns the existing config when the caller should short-circuit (idempotent
+ * import). Throws on any unsafe overwrite. Returns null when it is safe to
+ * proceed with a fresh write (no existing file, or forced overwrite + backup
+ * already taken).
+ */
+function assertSafeToWrite(desiredKey?: string): WalletConfig | null {
+  const file = getWalletFile()
+  if (!existsSync(file)) return null
+
+  const forced = process.env.B402_FORCE_WALLET_RESET === '1'
+  let existing: WalletConfig | null = null
+  let raw: string | null = null
+  try {
+    raw = readFileSync(file, 'utf8')
+    existing = JSON.parse(raw)
+  } catch {
+    existing = null
+  }
+
+  // Idempotent re-import: caller passed the exact same key already on disk.
+  if (
+    desiredKey !== undefined &&
+    existing &&
+    typeof existing.privateKey === 'string' &&
+    existing.privateKey.toLowerCase() === desiredKey.toLowerCase()
+  ) {
+    return existing
+  }
+
+  // Anything else is an overwrite; only allowed when explicitly forced.
+  if (!forced) {
+    const reason = existing
+      ? `wallet.json already exists at ${file} with a different private key`
+      : `wallet.json at ${file} is unreadable or malformed`
+    throw new Error(
+      `${reason}. Refusing to overwrite. ` +
+      `Back up the file manually, then re-run with B402_FORCE_WALLET_RESET=1 ` +
+      `to replace it (a timestamped wallet.json.bak.<unix-ts> will be saved first).`,
+    )
+  }
+
+  // Forced overwrite: copy existing file to a timestamped backup. Use
+  // unix-second resolution; tests may need to wait between calls to get
+  // distinct filenames, but production callers never overwrite that fast.
+  ensureDir()
+  const backup = `${file}.bak.${Math.floor(Date.now() / 1000)}`
+  copyFileSync(file, backup)
+  try { chmodSync(backup, 0o600) } catch {}
+  return null
+}
+
+/**
  * Import an existing private key and derive all addresses.
  * Saves to ~/.b402/wallet.json with 0600 permissions.
+ *
+ * Idempotent: returns the existing wallet if its key matches `privateKey`.
+ * Throws if a different wallet is already on disk and B402_FORCE_WALLET_RESET
+ * is not set. When forced, the prior file is preserved as a timestamped .bak.
  */
 export async function importWallet(privateKey: string): Promise<WalletConfig> {
   const { ethers } = await import('ethers')
   const key = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`
+  const existing = assertSafeToWrite(key)
+  if (existing) return existing
   const masterWallet = new ethers.Wallet(key)
   return deriveAndSave(masterWallet)
 }
@@ -60,9 +134,13 @@ export async function importWallet(privateKey: string): Promise<WalletConfig> {
 /**
  * Generate a new wallet and derive all addresses deterministically.
  * Saves to ~/.b402/wallet.json with 0600 permissions.
+ *
+ * Refuses to run when wallet.json already exists unless
+ * B402_FORCE_WALLET_RESET=1 is set.
  */
 export async function createWallet(): Promise<WalletConfig> {
   const { ethers } = await import('ethers')
+  assertSafeToWrite(undefined)
   const masterWallet = ethers.Wallet.createRandom()
   return deriveAndSave(masterWallet)
 }
@@ -118,8 +196,9 @@ async function deriveAndSave(masterWallet: import('ethers').HDNodeWallet | impor
 
   // Write with restricted permissions
   ensureDir()
-  writeFileSync(WALLET_FILE, JSON.stringify(config, null, 2))
-  chmodSync(WALLET_FILE, 0o600)
+  const file = getWalletFile()
+  writeFileSync(file, JSON.stringify(config, null, 2))
+  chmodSync(file, 0o600)
 
   return config
 }

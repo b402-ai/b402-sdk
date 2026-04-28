@@ -16,7 +16,7 @@
 
 import { ethers } from 'ethers'
 import { isWalletDeployed } from './wallet/wallet-factory'
-import { MORPHO_VAULTS, resolveVault, ERC4626_INTERFACE } from './lend/morpho-vaults'
+import { MORPHO_VAULTS, MORPHO_VAULTS_BY_CHAIN, getMorphoVaults, resolveVault, ERC4626_INTERFACE } from './lend/morpho-vaults'
 import { AERODROME_POOLS } from './lp/aerodrome-pools'
 import { PERPS_MARKETS } from './trade/synthetix-perps'
 import { BASE_TOKENS, BASE_CONTRACTS } from './types'
@@ -24,6 +24,7 @@ import {
   B402_CHAINS,
   getContractsForChain,
   getRailgunNetworkName,
+  getRelayAdaptAddress,
   type ChainContracts,
 } from './config/chains'
 
@@ -221,25 +222,46 @@ export interface PrivateSwapResult {
   tokenOut: string
 }
 
+export type LendProtocol = 'morpho' | 'aave'
+
 export interface PrivateLendParams {
   /** Token to deposit (default: USDC) */
   token?: string
   /** Amount to deposit (human-readable) */
   amount: string
-  /** Vault name or address (default: steakhouse) */
+  /**
+   * Lending protocol (default: 'morpho').
+   *
+   * - `morpho`: ERC-4626 MetaMorpho vaults. `vault` selects the curator
+   *   (steakhouse, gauntlet, …).
+   * - `aave`:   Aave V3 Pool. `market` selects the underlying token's market
+   *   (currently `usdc` on both Base and Arbitrum). aToken interest accrued
+   *   while shielded leaks to the vault — sub-bps for short holds; documented.
+   */
+  protocol?: LendProtocol
+  /** Morpho vault name or address (default: steakhouse). Ignored when protocol='aave'. */
   vault?: string
+  /** Aave market key (default: usdc). Ignored when protocol='morpho'. */
+  market?: string
 }
 
 export interface PrivateLendResult {
   txHash: string
   amount: string
+  /** Friendly market/vault name */
   vault: string
+  /** Protocol used to settle (mirrors input or the default) */
+  protocol: LendProtocol
 }
 
 export interface PrivateRedeemParams {
-  /** Vault name or address (default: steakhouse) */
+  /** Lending protocol (default: 'morpho'). See PrivateLendParams for details. */
+  protocol?: LendProtocol
+  /** Morpho vault name or address (default: steakhouse). Ignored when protocol='aave'. */
   vault?: string
-  /** Shares to redeem (human-readable). Omit to redeem all. */
+  /** Aave market key (default: usdc). Ignored when protocol='morpho'. */
+  market?: string
+  /** Morpho-only: shares to redeem (human-readable). Omit to redeem all. */
   shares?: string
 }
 
@@ -247,6 +269,7 @@ export interface PrivateRedeemResult {
   txHash: string
   assetsReceived: string
   vault: string
+  protocol: LendProtocol
 }
 
 export interface PrivateCrossChainParams {
@@ -495,7 +518,13 @@ export class B402 {
     this.contracts = getContractsForChain(this.chainId)
     this.railgunNetworkName = getRailgunNetworkName(this.chainId)
     this.provider = new ethers.JsonRpcProvider(this.rpcUrl)
-    this.facilitatorUrl = config.facilitatorUrl || DEFAULT_FACILITATOR
+    // Chain-specific facilitator: Base + Arb each have their own deployment.
+    // Prefer caller-supplied URL, then chain config, then the hardcoded Base
+    // default (only used when chains.ts doesn't list one for this chain).
+    this.facilitatorUrl =
+      config.facilitatorUrl ||
+      B402_CHAINS[this.chainId]?.facilitatorUrl ||
+      DEFAULT_FACILITATOR
     this.backendApiUrl = config.backendApiUrl || B402_CHAINS[this.chainId].backendApiUrl
     // Propagate to env so downstream modules that read env see it.
     // Constructor option wins over any pre-existing env value for this process.
@@ -559,7 +588,14 @@ export class B402 {
 
     const settle = (await settleRes.json()) as SettleResponse
     if (!settle.success) {
-      throw new Error(`Transaction failed: ${settle.errorReason || 'unknown'}`)
+      const detail = settle.userOpHash ? ` (userOpHash: ${settle.userOpHash})` : ''
+      // Debug: dump the full UserOp so we can simulate offline
+      if (process.env.B402_DEBUG_USEROP) {
+        console.error('[b402] UserOp that failed:', JSON.stringify(signedUserOp, null, 2))
+        console.error('[b402] chainId:', this.chainId)
+        console.error('[b402] entryPoint:', this.contracts.ENTRY_POINT)
+      }
+      throw new Error(`Transaction failed: ${settle.errorReason || 'unknown'}${detail}`)
     }
 
     this.emit({ type: 'done', title: 'Confirmed', message: `TX: ${settle.txHash}` })
@@ -628,11 +664,10 @@ export class B402 {
     }
   }
 
-  /** Deposit tokens into a Morpho ERC-4626 vault. Base only. */
+  /** Deposit tokens into a Morpho ERC-4626 vault. Supported on Base + Arbitrum. */
   async lend(params: LendParams): Promise<LendResult> {
-    this.requireBase('lend')
     const token = this.resolveToken(params.token)
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
     await this.init()
     const amount = ethers.parseUnits(params.amount, token.decimals)
 
@@ -646,10 +681,9 @@ export class B402 {
     return { txHash: result.txHash, amount: params.amount, vault: vault.name }
   }
 
-  /** Withdraw from a Morpho vault. Omit shares to redeem all. Base only. */
+  /** Withdraw from a Morpho vault. Omit shares to redeem all. Supported on Base + Arbitrum. */
   async redeem(params: RedeemParams = {}): Promise<RedeemResult> {
-    this.requireBase('redeem')
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
     await this.init()
     const vaultContract = new ethers.Contract(vault.address, ERC4626_INTERFACE, this.provider)
 
@@ -1595,13 +1629,16 @@ export class B402 {
             commitmentHash = ethers.keccak256(ethers.solidityPacked(['bytes32', 'bytes32', 'uint256'], [commitment.npk, tokenID, commitment.value]))
           }
 
-          // Cache under the smart wallet address so getShieldedBalances() finds it
+          // Cache under the smart wallet address so getShieldedBalances() finds it.
+          // Tag with chainId — smart wallet address is the same on every chain
+          // (CREATE2 deterministic), so without this Base shields leak into Arb queries.
           setCachedShield(this.wallet.toLowerCase(), {
             txHash,
             tokenAddress,
             amount: commitment.value.toString(),
             indexed: false,
             timestamp: Date.now(),
+            chainId: this.chainId,
             commitmentHash,
             treeNumber,
             position,
@@ -1670,12 +1707,13 @@ export class B402 {
       } catch { return null }
     })
 
-    // Morpho lending positions (Base-only for now)
-    const isBase = this.chainId === 8453
+    // Morpho lending positions — chain-aware (Base + Arbitrum supported).
+    const chainVaults = getMorphoVaults(this.chainId)
+    const hasMorpho = Object.keys(chainVaults).length > 0
     const { fetchAllVaultMetrics, formatAPY, formatTVL } = await import('./lend/morpho-api')
 
-    const positionPromises = isBase
-      ? Object.entries(MORPHO_VAULTS).map(async ([name, vault]) => {
+    const positionPromises = hasMorpho
+      ? Object.entries(chainVaults).map(async ([name, vault]) => {
           try {
             const contract = new ethers.Contract(vault.address, ERC4626_INTERFACE, this.provider)
             const shares: bigint = await contract.balanceOf(this.wallet)
@@ -1690,7 +1728,7 @@ export class B402 {
       Promise.all(balancePromises),
       Promise.all(positionPromises),
       this.getShieldedBalances(),
-      isBase ? fetchAllVaultMetrics(this.chainId) : Promise.resolve({} as Record<string, any>),
+      hasMorpho ? fetchAllVaultMetrics(this.chainId).catch(() => ({} as Record<string, any>)) : Promise.resolve({} as Record<string, any>),
     ])
 
     const positions = rawPositions
@@ -1708,6 +1746,7 @@ export class B402 {
       })
 
     // Read LP positions (Aerodrome is Base-only)
+    const isBase = this.chainId === 8453
     const { AERODROME_POOLS, GAUGE_ABI: G_ABI, POOL_ABI: P_ABI, AERO_TOKEN } = await import('./lp/aerodrome-pools')
     const { fetchAllPoolMetrics, formatAPY: fmtAPY, formatTVL: fmtTVL } = await import('./lp/aerodrome-api')
 
@@ -1785,7 +1824,7 @@ export class B402 {
     const { fetchAllPoolMetrics, getFallbackAPY: getFallbackLPAPY } = await import('./lp/aerodrome-api')
 
     const [morphoMetrics, poolMetrics] = await Promise.all([
-      fetchAllVaultMetrics(8453),
+      fetchAllVaultMetrics(this.chainId),
       fetchAllPoolMetrics(this.provider),
     ])
 
@@ -2452,7 +2491,7 @@ export class B402 {
     try {
       const { getAggregatorQuote, buildAggregatorSwapCalls } = await import('./swap/dex-aggregator')
       const aggQuote = await getAggregatorQuote(
-        tokenIn.address, tokenOut.address, totalAmount, slippagePercent, RELAY_ADAPT_ADDRESS
+        tokenIn.address, tokenOut.address, totalAmount, RELAY_ADAPT_ADDRESS, this.chainId, slippagePercent,
       )
       userCalls = await buildAggregatorSwapCalls(aggQuote, tokenIn.address, RELAY_ADAPT_ADDRESS)
       expectedOut = aggQuote.amountOut
@@ -2515,15 +2554,41 @@ export class B402 {
    * Share tokens (vault address as ERC20) are shielded back into the pool.
    */
   async privateLend(params: PrivateLendParams): Promise<PrivateLendResult> {
-    this.requireBase('privateLend')
-    const token = this.resolveToken(params.token || 'USDC')
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const protocol: LendProtocol = params.protocol ?? 'morpho'
+    const relayAdapt = getRelayAdaptAddress(this.chainId)
     await this.init()
+
+    if (protocol === 'aave') {
+      const { resolveAaveMarket, buildAaveSupplyCalls } = await import('./lend/aave-v3')
+      const market = resolveAaveMarket(params.market || 'usdc', this.chainId)
+      const tokenAddress = market.underlying
+      const amount = ethers.parseUnits(params.amount, market.decimals)
+
+      this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Building', message: 'Building Aave V3 supply calls' })
+
+      const userCalls = buildAaveSupplyCalls({ market, amount, recipient: relayAdapt })
+      const result = await this.executeCrossContractCall({
+        tokenAddress,
+        amount,
+        userCalls,
+        // Receipt is the rebasing aToken at the RelayAdapt; shield its
+        // current balance back into the pool. Note: future rebase accrues
+        // to the vault, not to the user UTXO (sub-bps for short holds).
+        shieldTokens: [{ tokenAddress: market.aToken }],
+        stepOffset: 1,
+        totalSteps: 6,
+      })
+
+      return { txHash: result.txHash, amount: params.amount, vault: market.name, protocol }
+    }
+
+    // Default: Morpho ERC-4626 vault path (unchanged behavior)
+    const token = this.resolveToken(params.token || 'USDC')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
     const amount = ethers.parseUnits(params.amount, token.decimals)
 
     this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Building', message: 'Building vault deposit calls' })
 
-    const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
     const erc20 = new ethers.Interface(ERC20_ABI)
 
     // approve(vault, amount) + vault.deposit(amount, RelayAdapt)
@@ -2535,7 +2600,7 @@ export class B402 {
       },
       {
         to: vault.address,
-        data: ERC4626_INTERFACE.encodeFunctionData('deposit', [amount, RELAY_ADAPT_ADDRESS]),
+        data: ERC4626_INTERFACE.encodeFunctionData('deposit', [amount, relayAdapt]),
         value: '0',
       },
     ]
@@ -2550,7 +2615,7 @@ export class B402 {
       totalSteps: 6,
     })
 
-    return { txHash: result.txHash, amount: params.amount, vault: vault.name }
+    return { txHash: result.txHash, amount: params.amount, vault: vault.name, protocol }
   }
 
   /**
@@ -2560,13 +2625,56 @@ export class B402 {
    * USDC is shielded back into the pool.
    */
   async privateRedeem(params: PrivateRedeemParams = {}): Promise<PrivateRedeemResult> {
-    this.requireBase('privateRedeem')
-    const vault = resolveVault(params.vault || 'steakhouse')
+    const protocol: LendProtocol = params.protocol ?? 'morpho'
+    const relayAdapt = getRelayAdaptAddress(this.chainId)
     await this.init()
 
-    this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Scanning', message: 'Checking shielded vault shares' })
+    if (protocol === 'aave') {
+      const { resolveAaveMarket, buildAaveWithdrawCalls } = await import('./lend/aave-v3')
+      const market = resolveAaveMarket(params.market || 'usdc', this.chainId)
 
-    const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
+      this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Scanning', message: 'Checking shielded aToken balance' })
+
+      // Find shielded aToken balance — that is the position to withdraw.
+      const shieldedBals = await this.getShieldedBalances()
+      const aBal = shieldedBals.find(
+        (b) => b.address?.toLowerCase() === market.aToken.toLowerCase(),
+      )
+      if (!aBal || parseFloat(aBal.balance) === 0) {
+        throw new Error(
+          `No shielded ${market.symbol} position in Aave V3 on this chain. Use privateLend({protocol:'aave'}) first.`,
+        )
+      }
+      // aToken decimals match underlying for Aave V3.
+      const aAmount = ethers.parseUnits(aBal.balance, market.decimals)
+
+      const userCalls = buildAaveWithdrawCalls({ market, recipient: relayAdapt })
+
+      const result = await this.executeCrossContractCall({
+        tokenAddress: market.aToken, // unshield the aToken position
+        amount: aAmount,
+        userCalls,
+        // Shield underlying back to pool — chain-aware via market.underlying.
+        shieldTokens: [{ tokenAddress: market.underlying }],
+        stepOffset: 1,
+        totalSteps: 6,
+      })
+
+      return {
+        txHash: result.txHash,
+        // Underlying assets received ≈ aToken amount (rebase delta is sub-bps
+        // for short holds and stays in the vault — documented).
+        assetsReceived: aBal.balance,
+        vault: market.name,
+        protocol,
+      }
+    }
+
+    // Default: Morpho ERC-4626 vault path (unchanged behavior)
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
+    const usdc = this.resolveToken('USDC')
+
+    this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Scanning', message: 'Checking shielded vault shares' })
 
     // Determine shares amount — from params or scan pool for vault share balance
     let shares: bigint
@@ -2596,7 +2704,7 @@ export class B402 {
     const userCalls = [
       {
         to: vault.address,
-        data: ERC4626_INTERFACE.encodeFunctionData('redeem', [shares, RELAY_ADAPT_ADDRESS, RELAY_ADAPT_ADDRESS]),
+        data: ERC4626_INTERFACE.encodeFunctionData('redeem', [shares, relayAdapt, relayAdapt]),
         value: '0',
       },
     ]
@@ -2605,8 +2713,8 @@ export class B402 {
       tokenAddress: vault.address,  // Unshield SHARE tokens
       amount: shares,
       userCalls,
-      // Shield USDC back to pool
-      shieldTokens: [{ tokenAddress: BASE_TOKENS.USDC.address }],
+      // Shield USDC back to pool — chain-aware (USDC differs per chain).
+      shieldTokens: [{ tokenAddress: usdc.address }],
       stepOffset: 1,
       totalSteps: 6,
     })
@@ -2615,6 +2723,7 @@ export class B402 {
       txHash: result.txHash,
       assetsReceived: ethers.formatUnits(expectedAssets, 6),
       vault: vault.name,
+      protocol,
     }
   }
 
@@ -2639,8 +2748,11 @@ export class B402 {
    * LI.FI picks the best tool (Across, Stargate, CCTP, Eco, NearIntents, etc.).
    * Charges a default 0.25% fixed fee.
    *
-   * v1 limitation: source chain must match the SDK's current chain (8453 for now).
-   * Cross-chain source selection will come in a follow-up.
+   * Source-side privacy: RelayAdapt is the visible caller on the source chain;
+   * the user's wallet is hidden inside the ZK proof. Destination-side privacy
+   * is NOT preserved — funds land at `params.destinationAddress` (a public
+   * address). End-to-end shielding via LiFi `/quote/contractCalls` is a v2
+   * follow-up.
    */
   async privateCrossChain(params: PrivateCrossChainParams): Promise<PrivateCrossChainResult> {
     await this.init()
@@ -2651,8 +2763,7 @@ export class B402 {
     const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
 
     const fromToken = this.resolveToken(params.fromToken)
-    // v1: source chain is Base (same as rest of SDK). Multi-chain source TBD.
-    const sourceChainConfig = getChainConfig(8453)
+    const sourceChainConfig = getChainConfig(this.chainId)
     const destChainConfig = getChainConfig(params.toChain)
 
     if (sourceChainConfig.chainId === destChainConfig.chainId) {
@@ -2687,7 +2798,7 @@ export class B402 {
       message: `Bridging ${params.amount} ${fromToken.symbol} (${sourceChainConfig.name}) -> ${toTokenSymbol} (${destChainConfig.name})`,
     })
 
-    const lifi = new LiFiProvider(params.lifiApiKey)
+    const lifi = new LiFiProvider(params.lifiApiKey ?? process.env.LIFI_API_KEY)
     const quote = await lifi.getBridgeQuote({
       fromChainId: sourceChainConfig.chainId,
       toChainId: destChainConfig.chainId,
@@ -2745,6 +2856,23 @@ export class B402 {
       destinationAddress: params.destinationAddress,
       estimatedDurationSec: quote.estimatedDurationSec,
     }
+  }
+
+  /**
+   * Poll the LiFi /status endpoint for a cross-chain transfer kicked off
+   * via `privateCrossChain`. Returns a normalized `pending | done | failed`
+   * status, the destination tx hash once filled, and the raw substatus
+   * string when LiFi provides one.
+   *
+   * Env: `LIFI_API_KEY` (optional) — recommended for higher rate limits.
+   */
+  async getCrossChainStatus(
+    srcTxHash: string,
+    opts: { lifiApiKey?: string } = {},
+  ): Promise<import('./bridge/lifi-provider').LiFiStatus> {
+    const { LiFiProvider } = await import('./bridge/lifi-provider')
+    const lifi = new LiFiProvider(opts.lifiApiKey ?? process.env.LIFI_API_KEY)
+    return lifi.getStatus(srcTxHash)
   }
 
   /**
@@ -2878,23 +3006,25 @@ export class B402 {
     step(3, 'Building', 'Building cross-contract calls')
 
     const {
-      RELAY_ADAPT_ADDRESS,
       buildRelayShieldRequests,
       computeAdaptParams,
       buildOrderedCalls,
       buildRelayCalldata,
     } = await import('./privacy/lib/relay-adapt')
+    const relayAdaptAddress = getRelayAdaptAddress(this.chainId)
 
-    // Ensure input token is also in shield list (re-shield any remainder)
+    // Always re-shield the input token alongside caller-specified outputs.
+    // Unshield uses the full UTXO value, so any amount above what userCalls
+    // consume is left in RelayAdapt and would be stranded otherwise.
     const allShieldTokens = [...shieldTokens]
-    if (!allShieldTokens.some(s => s.tokenAddress.toLowerCase() === tokenAddress.toLowerCase())) {
+    if (!allShieldTokens.some((s) => s.tokenAddress.toLowerCase() === tokenAddress.toLowerCase())) {
       allShieldTokens.push({ tokenAddress })
     }
 
     const { shieldCallData } = await buildRelayShieldRequests(railgunAddress, allShieldTokens)
 
-    // Build ordered calls: user calls + shield call at end
-    const orderedCalls = buildOrderedCalls(userCalls, shieldCallData, tokenAddress, allShieldTokens)
+    // Build ordered calls: user calls + shield call at end (chain-specific RelayAdapt)
+    const orderedCalls = buildOrderedCalls(userCalls, shieldCallData, tokenAddress, allShieldTokens, relayAdaptAddress)
 
     // ── Step 4: Compute adaptParams + build proof ─────────────────────
     step(4, 'ZK proof', 'Generating zero-knowledge proof (5-30s)')
@@ -2935,13 +3065,13 @@ export class B402 {
       throw new Error('Merkle proof verification failed')
     }
 
-    // Build proof inputs — unshield full UTXO to RelayAdapt
+    // Build proof inputs — unshield full UTXO to RelayAdapt (chain-specific)
     const proofInputs = buildUnshieldProofInputs({
       utxo,
       nullifyingKey: keys.nullifyingKey,
       spendingKeyPair: keys.spendingKeyPair,
       unshieldAmount: utxo.note.value, // Full UTXO value
-      recipientAddress: RELAY_ADAPT_ADDRESS,
+      recipientAddress: relayAdaptAddress,
       tokenAddress,
     })
 
@@ -2952,7 +3082,7 @@ export class B402 {
       chainId,
       treeNumber: utxo.tree,
       outputCount: 1,
-      adaptContract: RELAY_ADAPT_ADDRESS,
+      adaptContract: relayAdaptAddress,
       adaptParams: adaptParamsHash,
     })
 
@@ -2967,12 +3097,12 @@ export class B402 {
       proofResult,
       treeNumber: utxo.tree,
       tokenAddress,
-      recipientAddress: RELAY_ADAPT_ADDRESS,
+      recipientAddress: relayAdaptAddress,
       unshieldAmount: utxo.note.value,
       chainId,
     })
 
-    const relayTx = buildRelayCalldata(txStruct, actionData)
+    const relayTx = buildRelayCalldata(txStruct, actionData, relayAdaptAddress)
 
     // ── Step 6: Submit as UserOp ─────────────────────────────────────
     step(6, 'Executing', 'Submitting via facilitator')
