@@ -1,5 +1,6 @@
 import { B402 } from '@b402ai/sdk'
 import { getPrivateKey } from './wallet-store.js'
+import { log } from './logger.js'
 
 export type SupportedChain = 'base' | 'arbitrum' | 'arb' | 'bsc'
 
@@ -56,13 +57,11 @@ export function getB402(chain?: SupportedChain | number): B402 {
     facilitatorUrl: FACILITATOR_ENV[chainId],
   })
   instances.set(chainId, instance)
-  // Log to stderr so MCP-host log capture shows which chain we resolved.
-  // Fires once per chain per process.
-  console.error(
-    `[b402-mcp] resolved B402 instance for chainId=${chainId} ` +
-      `rpc=${instance.rpcUrl} facilitator=${(instance as any).facilitatorUrl} ` +
-      `wallet-pending=true`,
-  )
+  log('b402-client.resolved', {
+    chainId,
+    rpc: instance.rpcUrl,
+    facilitator: (instance as unknown as { facilitatorUrl: string }).facilitatorUrl,
+  })
   return instance
 }
 

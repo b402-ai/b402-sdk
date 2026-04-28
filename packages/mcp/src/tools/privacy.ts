@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { getB402, SUPPORTED_CHAINS, MORPHO_CHAINS } from '../lib/b402-client.js'
+import { log } from '../lib/logger.js'
 
 const basescan = (hash: string) => `https://basescan.org/tx/${hash}`
 
@@ -35,6 +36,7 @@ export function registerPrivacyTools(server: McpServer) {
       chain: z.enum(CHAIN_ENUM).optional().default('base').describe('Chain to shield on. Default: base.'),
     },
     async ({ amount, token, chain }) => {
+      log('tool=shield_usdc start', { amount, token, chain })
       try {
         const b402 = getB402(chain)
         const result = await b402.shield({ token, amount })
@@ -56,6 +58,7 @@ export function registerPrivacyTools(server: McpServer) {
       chain: z.enum(CHAIN_ENUM).optional().describe('Optional: scope to one chain. Default queries all 3.'),
     },
     async ({ chain }) => {
+      log('tool=check_pool_balance start', { chain: chain ?? 'all' })
       try {
         const targets = chain
           ? SUPPORTED_CHAINS.filter((c) => c.name === chain)
@@ -194,6 +197,7 @@ export function registerPrivacyTools(server: McpServer) {
       amount: z.string().describe('Amount to swap'),
     },
     async ({ from, to, amount }) => {
+      log('tool=private_swap start', { from, to, amount })
       try {
         const b402 = getB402()
         const result = await b402.privateSwap({ from, to, amount, slippageBps: 300 })
@@ -218,6 +222,7 @@ export function registerPrivacyTools(server: McpServer) {
       chain: z.enum(MORPHO_CHAIN_ENUM).optional().default('base').describe('Chain for the lend op. Base or Arbitrum.'),
     },
     async ({ amount, vault, chain }) => {
+      log('tool=lend_privately start', { amount, vault, chain })
       try {
         const b402 = getB402(chain)
         const result = await b402.privateLend({ token: 'USDC', amount, vault })
@@ -244,6 +249,7 @@ export function registerPrivacyTools(server: McpServer) {
       destinationAddress: z.string().describe('Recipient EOA address on the destination chain. Funds land here. Use a fresh address for stronger unlinkability.'),
     },
     async ({ toChain, fromToken, toToken, amount, destinationAddress }) => {
+      log('tool=cross_chain_privately start', { toChain, fromToken, toToken, amount, destinationAddress })
       try {
         const b402 = getB402()
         const result = await b402.privateCrossChain({
@@ -284,6 +290,7 @@ export function registerPrivacyTools(server: McpServer) {
       chain: z.enum(MORPHO_CHAIN_ENUM).optional().default('base').describe('Chain for the redeem op. Must match where lend_privately was called.'),
     },
     async ({ vault, chain }) => {
+      log('tool=redeem_privately start', { vault, chain })
       try {
         const b402 = getB402(chain)
         const result = await b402.privateRedeem({ vault })

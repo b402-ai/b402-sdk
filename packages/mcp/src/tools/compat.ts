@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { getB402, SUPPORTED_CHAINS } from '../lib/b402-client.js'
 import { sequencer } from '../lib/sequencer-client.js'
+import { log } from '../lib/logger.js'
 
 const PAYMENT_TOKEN = 'USDC'
 const PAYMENT_REQUIRED_HEADERS = ['x-payment-required', 'payment-required']
@@ -84,6 +85,7 @@ export function registerCompatibilityTools(server: McpServer) {
       chain: z.enum(['base', 'arbitrum', 'bsc']).optional().describe('Optional: scope to a single chain. Default queries all 3.'),
     },
     async ({ agentId, chain }) => {
+      log('tool=b402_balance start', { agentId, chain: chain ?? 'all' })
       try {
         if (agentId) {
           const bal = await sequencer.getBalance(agentId)

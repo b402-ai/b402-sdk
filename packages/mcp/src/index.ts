@@ -97,6 +97,7 @@ Tools:
   run_strategy          Autonomous: swap + lend + reserve
 
 Wallet stored at ~/.b402/wallet.json (auto-created on install)
+Logs written to ~/.b402/mcp.log (tail -f to debug)
 
 npm: https://npmjs.com/package/b402-mcp
 docs: https://b402.ai
