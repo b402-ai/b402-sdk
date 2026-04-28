@@ -79,7 +79,7 @@ async function extractPaymentRequirement(response: Response): Promise<X402Requir
 export function registerCompatibilityTools(server: McpServer) {
   server.tool(
     'b402_balance',
-    'Full b402 balance read. With `agentId` returns sequencer credits. Otherwise queries every chain (Base + Arbitrum + BSC) and returns: wallet USDC, shielded USDC, shielded vault share tokens (e.g. gtUSDCc), and active vault positions with APY. Pass `chain` to scope to a single chain. This is the canonical "what do I have" call — covers payments, privacy pool, and yield positions in one shot.',
+    'Full b402 balance read across Base + Arbitrum + BSC: wallet USDC, shielded USDC, every shielded vault-share token with exact decimal balance, and active vault positions with APY. With `agentId` returns sequencer credits. Pass `chain` to scope to one chain. IMPORTANT: When relaying this tool result to the user, render the response text VERBATIM as a code block — do NOT summarize, group, or hide rows. The user is integrating against this and needs every line and exact number visible.',
     {
       agentId: z.string().optional().describe('Optional sequencer agent id for credit balance lookup'),
       chain: z.enum(['base', 'arbitrum', 'bsc']).optional().describe('Optional: scope to a single chain. Default queries all 3.'),
@@ -143,25 +143,36 @@ export function registerCompatibilityTools(server: McpServer) {
         // Smart wallet address is the same on all chains (Nexus CREATE2 deterministic).
         const sw = results.find((r) => r.ok)?.smartWallet ?? '(unavailable)'
 
-        const lines = [`b402 wallet balance`, `Incognito wallet: ${sw}`, '']
+        // Strict tabular text — agents/LLMs relay tables more reliably than prose.
+        const lines: string[] = [
+          'b402 balance',
+          `wallet: ${sw}  (same address on Base, Arbitrum, BSC)`,
+          '',
+          'chain     | walletUSDC | poolUSDC',
+          '----------+------------+----------',
+        ]
         for (const r of results) {
           if (!r.ok) {
-            lines.push(`${r.chain.padEnd(9)} (error: ${r.error})`)
+            lines.push(`${r.chain.padEnd(9)} | ERROR: ${r.error}`)
             continue
           }
           lines.push(
-            `${r.chain.padEnd(9)} wallet: ${r.walletUsdc} ${PAYMENT_TOKEN}, shielded: ${r.poolUsdc} ${PAYMENT_TOKEN}`,
+            `${r.chain.padEnd(9)} | ${r.walletUsdc.padEnd(10)} | ${r.poolUsdc}`,
           )
+        }
+        // Then a per-chain section listing each shielded share + position with full precision.
+        for (const r of results) {
+          if (!r.ok) continue
+          if (r.vaultShares.length === 0 && r.positions.length === 0) continue
+          lines.push('')
+          lines.push(`-- ${r.chain} shielded vault shares + positions --`)
           for (const s of r.vaultShares) {
-            lines.push(`           shielded vault shares: ${s.balance} ${s.token}`)
+            lines.push(`${r.chain.padEnd(9)}  shielded ${s.token}: ${s.balance}`)
           }
           for (const p of r.positions) {
-            lines.push(`           vault position: ${p.vault} → ${p.assets} (${p.apy} APY)`)
+            lines.push(`${r.chain.padEnd(9)}  position ${p.vault}: ${p.assets} (APY ${p.apy})`)
           }
         }
-        lines.push('')
-        lines.push(`Same address on all chains. Send USDC to ${sw} on any of: Base, Arbitrum, BSC.`)
-
         return { content: [{ type: 'text', text: lines.join('\n') }] }
       } catch (e: any) {
         return {
