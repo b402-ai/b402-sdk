@@ -1,9 +1,42 @@
 # Spike: privateCrossChain v2 — atomic dest-chain shielding
 
-**Status:** design only, no code
+**Status:** design + partial implementation deferred (testnet validation gate)
 **Author:** mayur + claude
-**Pairs with:** PR #4 (multi-chain Arb), Issue #5 (Aave V3)
-**Target:** PR after #4 + #5 land. ~150-200 LOC.
+**Pairs with:** PR #4 (multi-chain Arb + Aave V3 + cross-chain hardening)
+**Target:** standalone PR after PR #4 merges, gated on Railgun-mainnet testnet round-trip
+  — Railgun has no public testnet, so the validation will be a min-amount
+  ($0.10) live mainnet trip with monitoring.
+
+## What landed in PR #4
+
+- `B402.privateCrossChain` source chain now uses `this.chainId` (was hardcoded
+  `8453`). Arb→Base, Arb→Eth, Eth→Arb all route correctly.
+- `B402.getCrossChainStatus(txHash)` polls LiFi `/v1/status` with normalized
+  `pending | done | failed` plus the dest-chain tx hash once filled.
+- `LiFiProvider` reads `LIFI_API_KEY` from env when constructor arg is not
+  passed → production callers get the higher rate-limit tier.
+- New MCP tool `cross_chain_status`.
+- 6 LiFi cross-chain tests + 3 status tests.
+
+## What's deferred (this v2 spike)
+
+The atomic dest-chain shield via LiFi `/v1/quote/contractCalls`. Still the
+right design — see flow below — but shipping it without validation is a
+fund-loss risk because:
+
+1. The dest-chain RelayAdapt shield calldata must be pre-built; bridge
+   output amount is unknown at build time, so we'd use the variable-amount
+   `value=0` path that snapshots `balanceOf(RelayAdapt)` at execution.
+2. Commitments are encrypted with the user's viewing key. A wrong
+   encryption = user can't decrypt their own UTXO on the dest chain =
+   funds unrecoverable in the dest pool.
+3. LiFi Executor's failure modes (refund-to-source vs stuck-at-dest)
+   need live observation.
+4. Railgun is mainnet-only on Arbitrum. There is no testnet.
+
+The validation plan is: ship behind a feature flag, run end-to-end with
+$0.10 on Arb→Base, verify the dest commitment surfaces in
+`b402.status({chain: 'base'})`, then enable by default in v0.6.4.
 
 ## Today (v1 — what shipped in 0.6.0)
 
