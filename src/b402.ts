@@ -496,7 +496,13 @@ export class B402 {
     this.contracts = getContractsForChain(this.chainId)
     this.railgunNetworkName = getRailgunNetworkName(this.chainId)
     this.provider = new ethers.JsonRpcProvider(this.rpcUrl)
-    this.facilitatorUrl = config.facilitatorUrl || DEFAULT_FACILITATOR
+    // Chain-specific facilitator: Base + Arb each have their own deployment.
+    // Prefer caller-supplied URL, then chain config, then the hardcoded Base
+    // default (only used when chains.ts doesn't list one for this chain).
+    this.facilitatorUrl =
+      config.facilitatorUrl ||
+      B402_CHAINS[this.chainId]?.facilitatorUrl ||
+      DEFAULT_FACILITATOR
     this.backendApiUrl = config.backendApiUrl || B402_CHAINS[this.chainId].backendApiUrl
     // Propagate to env so downstream modules that read env see it.
     // Constructor option wins over any pre-existing env value for this process.
