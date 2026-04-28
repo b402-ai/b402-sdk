@@ -79,7 +79,7 @@ async function extractPaymentRequirement(response: Response): Promise<X402Requir
 export function registerCompatibilityTools(server: McpServer) {
   server.tool(
     'b402_balance',
-    'Check b402 balance for payments. Reads sequencer credits when `agentId` is provided. Otherwise queries wallet + shielded balances across Base, Arbitrum, and BSC. Pass `chain` to scope to a single chain.',
+    'Full b402 balance read. With `agentId` returns sequencer credits. Otherwise queries every chain (Base + Arbitrum + BSC) and returns: wallet USDC, shielded USDC, shielded vault share tokens (e.g. gtUSDCc), and active vault positions with APY. Pass `chain` to scope to a single chain. This is the canonical "what do I have" call — covers payments, privacy pool, and yield positions in one shot.',
     {
       agentId: z.string().optional().describe('Optional sequencer agent id for credit balance lookup'),
       chain: z.enum(['base', 'arbitrum', 'bsc']).optional().describe('Optional: scope to a single chain. Default queries all 3.'),
@@ -116,11 +116,22 @@ export function registerCompatibilityTools(server: McpServer) {
                 status.balances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
               const poolUsdc =
                 status.shieldedBalances.find((b) => b.token === PAYMENT_TOKEN)?.balance ?? '0'
+              // Vault shares (any non-USDC shielded balance with a positive amount)
+              const vaultShares = status.shieldedBalances
+                .filter((b) => b.token !== PAYMENT_TOKEN && parseFloat(b.balance) > 0)
+                .map((b) => ({ token: b.token, balance: b.balance }))
+              const positions = status.positions.map((p) => ({
+                vault: p.vault,
+                assets: p.assets,
+                apy: p.apyEstimate,
+              }))
               return {
                 chain: c.name,
                 smartWallet: status.smartWallet,
                 walletUsdc,
                 poolUsdc,
+                vaultShares,
+                positions,
                 ok: true as const,
               }
             } catch (e: any) {
@@ -134,12 +145,18 @@ export function registerCompatibilityTools(server: McpServer) {
 
         const lines = [`b402 wallet balance`, `Incognito wallet: ${sw}`, '']
         for (const r of results) {
-          if (r.ok) {
-            lines.push(
-              `${r.chain.padEnd(9)} wallet: ${r.walletUsdc} ${PAYMENT_TOKEN}, shielded: ${r.poolUsdc} ${PAYMENT_TOKEN}`,
-            )
-          } else {
+          if (!r.ok) {
             lines.push(`${r.chain.padEnd(9)} (error: ${r.error})`)
+            continue
+          }
+          lines.push(
+            `${r.chain.padEnd(9)} wallet: ${r.walletUsdc} ${PAYMENT_TOKEN}, shielded: ${r.poolUsdc} ${PAYMENT_TOKEN}`,
+          )
+          for (const s of r.vaultShares) {
+            lines.push(`           shielded vault shares: ${s.balance} ${s.token}`)
+          }
+          for (const p of r.positions) {
+            lines.push(`           vault position: ${p.vault} → ${p.assets} (${p.apy} APY)`)
           }
         }
         lines.push('')
