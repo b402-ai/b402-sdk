@@ -2469,7 +2469,7 @@ export class B402 {
     try {
       const { getAggregatorQuote, buildAggregatorSwapCalls } = await import('./swap/dex-aggregator')
       const aggQuote = await getAggregatorQuote(
-        tokenIn.address, tokenOut.address, totalAmount, slippagePercent, RELAY_ADAPT_ADDRESS
+        tokenIn.address, tokenOut.address, totalAmount, RELAY_ADAPT_ADDRESS, this.chainId, slippagePercent,
       )
       userCalls = await buildAggregatorSwapCalls(aggQuote, tokenIn.address, RELAY_ADAPT_ADDRESS)
       expectedOut = aggQuote.amountOut
