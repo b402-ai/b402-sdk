@@ -125,7 +125,7 @@ import { registerStrategyTools } from './tools/strategy.js'
 
 const server = new McpServer({
   name: 'b402',
-  version: '0.4.0',
+  version: '0.5.0',
   description: [
     'b402 — Private DeFi execution for AI agents on Base.',
     '',
