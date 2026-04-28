@@ -29,7 +29,8 @@ function ensureDir(): void {
   dirReady = true
 }
 
-const SECRET_KEY_RE = /private[_-]?key|mnemonic|signature|password|secret|api[_-]?key|^key$/i
+const SECRET_KEY_RE =
+  /private[_-]?key|mnemonic|seed[_-]?phrase|recovery[_-]?phrase|signature|password|secret|api[_-]?key|^key$/i
 
 function sanitize(val: unknown): unknown {
   if (val === null || typeof val !== 'object') return val

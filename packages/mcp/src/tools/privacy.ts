@@ -40,12 +40,14 @@ export function registerPrivacyTools(server: McpServer) {
       try {
         const b402 = getB402(chain)
         const result = await b402.shield({ token, amount })
+        log('tool=shield_usdc ok', { chainId: b402.chainId, txHash: result.txHash, indexed: result.indexed })
         return { content: [{ type: 'text', text:
           `Shielded ${amount} ${token} into ${chain} privacy pool.\n` +
           `TX: ${explorerTxLink(b402.chainId, result.txHash)}\n` +
           `Indexed: ${result.indexed}`
         }] }
       } catch (e: any) {
+        log('tool=shield_usdc error', { message: e.message })
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
       }
     }
@@ -59,6 +61,7 @@ export function registerPrivacyTools(server: McpServer) {
     },
     async ({ chain }) => {
       log('tool=check_pool_balance start', { chain: chain ?? 'all' })
+      const _bal_t0 = Date.now()
       try {
         const targets = chain
           ? SUPPORTED_CHAINS.filter((c) => c.name === chain)
@@ -119,8 +122,10 @@ export function registerPrivacyTools(server: McpServer) {
           lines.push('')
         }
 
+        log('tool=check_pool_balance ok', { chains: reports.map((r) => r.chain), ms: Date.now() - _bal_t0 })
         return { content: [{ type: 'text', text: lines.join('\n').trimEnd() }] }
       } catch (e: any) {
+        log('tool=check_pool_balance error', { message: e.message })
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
       }
     }
@@ -226,6 +231,7 @@ export function registerPrivacyTools(server: McpServer) {
       try {
         const b402 = getB402(chain)
         const result = await b402.privateLend({ token: 'USDC', amount, vault })
+        log('tool=lend_privately ok', { chainId: b402.chainId, txHash: result.txHash, vault: result.vault })
         return { content: [{ type: 'text', text:
           `Private lend complete on ${chain}.\n` +
           `Deposited: ${amount} USDC → ${result.vault}\n` +
@@ -233,6 +239,7 @@ export function registerPrivacyTools(server: McpServer) {
           `Earning yield privately. No wallet linked to vault.`
         }] }
       } catch (e: any) {
+        log('tool=lend_privately error', { message: e.message })
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
       }
     }
@@ -294,12 +301,14 @@ export function registerPrivacyTools(server: McpServer) {
       try {
         const b402 = getB402(chain)
         const result = await b402.privateRedeem({ vault })
+        log('tool=redeem_privately ok', { chainId: b402.chainId, txHash: result.txHash, assetsReceived: result.assetsReceived })
         return { content: [{ type: 'text', text:
           `Private redeem complete on ${chain}.\n` +
           `Received: ${result.assetsReceived} USDC → privacy pool\n` +
           `TX: ${explorerTxLink(b402.chainId, result.txHash)}`
         }] }
       } catch (e: any) {
+        log('tool=redeem_privately error', { message: e.message })
         return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true }
       }
     }
