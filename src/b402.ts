@@ -222,25 +222,46 @@ export interface PrivateSwapResult {
   tokenOut: string
 }
 
+export type LendProtocol = 'morpho' | 'aave'
+
 export interface PrivateLendParams {
   /** Token to deposit (default: USDC) */
   token?: string
   /** Amount to deposit (human-readable) */
   amount: string
-  /** Vault name or address (default: steakhouse) */
+  /**
+   * Lending protocol (default: 'morpho').
+   *
+   * - `morpho`: ERC-4626 MetaMorpho vaults. `vault` selects the curator
+   *   (steakhouse, gauntlet, …).
+   * - `aave`:   Aave V3 Pool. `market` selects the underlying token's market
+   *   (currently `usdc` on both Base and Arbitrum). aToken interest accrued
+   *   while shielded leaks to the vault — sub-bps for short holds; documented.
+   */
+  protocol?: LendProtocol
+  /** Morpho vault name or address (default: steakhouse). Ignored when protocol='aave'. */
   vault?: string
+  /** Aave market key (default: usdc). Ignored when protocol='morpho'. */
+  market?: string
 }
 
 export interface PrivateLendResult {
   txHash: string
   amount: string
+  /** Friendly market/vault name */
   vault: string
+  /** Protocol used to settle (mirrors input or the default) */
+  protocol: LendProtocol
 }
 
 export interface PrivateRedeemParams {
-  /** Vault name or address (default: steakhouse) */
+  /** Lending protocol (default: 'morpho'). See PrivateLendParams for details. */
+  protocol?: LendProtocol
+  /** Morpho vault name or address (default: steakhouse). Ignored when protocol='aave'. */
   vault?: string
-  /** Shares to redeem (human-readable). Omit to redeem all. */
+  /** Aave market key (default: usdc). Ignored when protocol='morpho'. */
+  market?: string
+  /** Morpho-only: shares to redeem (human-readable). Omit to redeem all. */
   shares?: string
 }
 
@@ -248,6 +269,7 @@ export interface PrivateRedeemResult {
   txHash: string
   assetsReceived: string
   vault: string
+  protocol: LendProtocol
 }
 
 export interface PrivateCrossChainParams {
@@ -2532,10 +2554,37 @@ export class B402 {
    * Share tokens (vault address as ERC20) are shielded back into the pool.
    */
   async privateLend(params: PrivateLendParams): Promise<PrivateLendResult> {
-    const token = this.resolveToken(params.token || 'USDC')
-    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
+    const protocol: LendProtocol = params.protocol ?? 'morpho'
     const relayAdapt = getRelayAdaptAddress(this.chainId)
     await this.init()
+
+    if (protocol === 'aave') {
+      const { resolveAaveMarket, buildAaveSupplyCalls } = await import('./lend/aave-v3')
+      const market = resolveAaveMarket(params.market || 'usdc', this.chainId)
+      const tokenAddress = market.underlying
+      const amount = ethers.parseUnits(params.amount, market.decimals)
+
+      this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Building', message: 'Building Aave V3 supply calls' })
+
+      const userCalls = buildAaveSupplyCalls({ market, amount, recipient: relayAdapt })
+      const result = await this.executeCrossContractCall({
+        tokenAddress,
+        amount,
+        userCalls,
+        // Receipt is the rebasing aToken at the RelayAdapt; shield its
+        // current balance back into the pool. Note: future rebase accrues
+        // to the vault, not to the user UTXO (sub-bps for short holds).
+        shieldTokens: [{ tokenAddress: market.aToken }],
+        stepOffset: 1,
+        totalSteps: 6,
+      })
+
+      return { txHash: result.txHash, amount: params.amount, vault: market.name, protocol }
+    }
+
+    // Default: Morpho ERC-4626 vault path (unchanged behavior)
+    const token = this.resolveToken(params.token || 'USDC')
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
     const amount = ethers.parseUnits(params.amount, token.decimals)
 
     this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Building', message: 'Building vault deposit calls' })
@@ -2566,7 +2615,7 @@ export class B402 {
       totalSteps: 6,
     })
 
-    return { txHash: result.txHash, amount: params.amount, vault: vault.name }
+    return { txHash: result.txHash, amount: params.amount, vault: vault.name, protocol }
   }
 
   /**
@@ -2576,10 +2625,54 @@ export class B402 {
    * USDC is shielded back into the pool.
    */
   async privateRedeem(params: PrivateRedeemParams = {}): Promise<PrivateRedeemResult> {
-    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
+    const protocol: LendProtocol = params.protocol ?? 'morpho'
     const relayAdapt = getRelayAdaptAddress(this.chainId)
-    const usdc = this.resolveToken('USDC')
     await this.init()
+
+    if (protocol === 'aave') {
+      const { resolveAaveMarket, buildAaveWithdrawCalls } = await import('./lend/aave-v3')
+      const market = resolveAaveMarket(params.market || 'usdc', this.chainId)
+
+      this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Scanning', message: 'Checking shielded aToken balance' })
+
+      // Find shielded aToken balance — that is the position to withdraw.
+      const shieldedBals = await this.getShieldedBalances()
+      const aBal = shieldedBals.find(
+        (b) => b.address?.toLowerCase() === market.aToken.toLowerCase(),
+      )
+      if (!aBal || parseFloat(aBal.balance) === 0) {
+        throw new Error(
+          `No shielded ${market.symbol} position in Aave V3 on this chain. Use privateLend({protocol:'aave'}) first.`,
+        )
+      }
+      // aToken decimals match underlying for Aave V3.
+      const aAmount = ethers.parseUnits(aBal.balance, market.decimals)
+
+      const userCalls = buildAaveWithdrawCalls({ market, recipient: relayAdapt })
+
+      const result = await this.executeCrossContractCall({
+        tokenAddress: market.aToken, // unshield the aToken position
+        amount: aAmount,
+        userCalls,
+        // Shield underlying back to pool — chain-aware via market.underlying.
+        shieldTokens: [{ tokenAddress: market.underlying }],
+        stepOffset: 1,
+        totalSteps: 6,
+      })
+
+      return {
+        txHash: result.txHash,
+        // Underlying assets received ≈ aToken amount (rebase delta is sub-bps
+        // for short holds and stays in the vault — documented).
+        assetsReceived: aBal.balance,
+        vault: market.name,
+        protocol,
+      }
+    }
+
+    // Default: Morpho ERC-4626 vault path (unchanged behavior)
+    const vault = resolveVault(params.vault || 'steakhouse', this.chainId)
+    const usdc = this.resolveToken('USDC')
 
     this.emit({ type: 'step', step: 1, totalSteps: 6, title: 'Scanning', message: 'Checking shielded vault shares' })
 
@@ -2630,6 +2723,7 @@ export class B402 {
       txHash: result.txHash,
       assetsReceived: ethers.formatUnits(expectedAssets, 6),
       vault: vault.name,
+      protocol,
     }
   }
 

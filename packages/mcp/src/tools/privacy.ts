@@ -220,23 +220,31 @@ export function registerPrivacyTools(server: McpServer) {
 
   server.tool(
     'lend_privately',
-    'Deposit USDC from the privacy pool into a Morpho ERC-4626 vault to earn yield. Uses ZK proof via RelayAdapt — vault deposit is real, no wallet linked. Shares shielded back into pool. Supported on Base (vaults: steakhouse, moonwell, gauntlet, steakhouse-hy) and Arbitrum (vaults: steakhouse-hy, steakhouse, gauntlet, gauntlet-prime). Takes ~15-30 seconds.',
+    'Deposit USDC from the privacy pool into a yield-earning protocol. Two protocols supported: (a) Morpho ERC-4626 MetaMorpho vaults — Steakhouse, Moonwell (Base), Gauntlet, Steakhouse High Yield. (b) Aave V3 — much larger TVL, native USDC market on both Base and Arbitrum; aToken interest accrued *while shielded* leaks to the protocol vault (sub-bps for short holds, documented). Uses ZK proof via RelayAdapt — deposit is real, no wallet linked. Receipt token (vault shares or aToken) shielded back into pool. Takes ~15-30 seconds.',
     {
       amount: z.string().describe('Amount to lend in USDC'),
-      vault: z.string().default('steakhouse-hy').describe('Vault key. Base: steakhouse | moonwell | gauntlet | steakhouse-hy. Arb: steakhouse-hy | steakhouse | gauntlet | gauntlet-prime.'),
+      protocol: z.enum(['morpho', 'aave']).optional().default('morpho').describe('Protocol: morpho (default) or aave.'),
+      vault: z.string().optional().describe('Morpho vault key (default: steakhouse-hy). Base: steakhouse | moonwell | gauntlet | steakhouse-hy. Arb: steakhouse-hy | steakhouse | gauntlet | gauntlet-prime. Ignored when protocol=aave.'),
+      market: z.string().optional().describe('Aave market key (default: usdc). Ignored when protocol=morpho.'),
       chain: z.enum(MORPHO_CHAIN_ENUM).optional().default('base').describe('Chain for the lend op. Base or Arbitrum.'),
     },
-    async ({ amount, vault, chain }) => {
-      log('tool=lend_privately start', { amount, vault, chain })
+    async ({ amount, protocol, vault, market, chain }) => {
+      log('tool=lend_privately start', { amount, protocol, vault, market, chain })
       try {
         const b402 = getB402(chain)
-        const result = await b402.privateLend({ token: 'USDC', amount, vault })
-        log('tool=lend_privately ok', { chainId: b402.chainId, txHash: result.txHash, vault: result.vault })
+        const result = await b402.privateLend({
+          token: 'USDC',
+          amount,
+          protocol,
+          vault: vault ?? 'steakhouse-hy',
+          market: market ?? 'usdc',
+        })
+        log('tool=lend_privately ok', { chainId: b402.chainId, txHash: result.txHash, protocol: result.protocol, vault: result.vault })
         return { content: [{ type: 'text', text:
-          `Private lend complete on ${chain}.\n` +
+          `Private lend complete on ${chain} via ${result.protocol.toUpperCase()}.\n` +
           `Deposited: ${amount} USDC → ${result.vault}\n` +
           `TX: ${explorerTxLink(b402.chainId, result.txHash)}\n` +
-          `Earning yield privately. No wallet linked to vault.`
+          `Earning yield privately. No wallet linked to position.`
         }] }
       } catch (e: any) {
         log('tool=lend_privately error', { message: e.message })
@@ -291,20 +299,27 @@ export function registerPrivacyTools(server: McpServer) {
 
   server.tool(
     'redeem_privately',
-    'Withdraw from a Morpho vault back to the privacy pool. Burns vault shares (shielded in pool), redeems underlying USDC, shields back. Requires shares deposited via lend_privately on the same chain. Supported on Base + Arbitrum. Takes ~15-30 seconds.',
+    'Withdraw a yield position back to the privacy pool. Works for both Morpho vault shares and Aave V3 aToken positions — pass the same `protocol` you used for lend_privately. Burns the receipt token (shielded in pool), redeems underlying USDC, shields back. Supported on Base + Arbitrum. Takes ~15-30 seconds.',
     {
-      vault: z.string().default('steakhouse-hy').describe('Vault key on the chosen chain.'),
+      protocol: z.enum(['morpho', 'aave']).optional().default('morpho').describe('Protocol: morpho (default) or aave. Must match the lend_privately call.'),
+      vault: z.string().optional().describe('Morpho vault key (default: steakhouse-hy). Ignored when protocol=aave.'),
+      market: z.string().optional().describe('Aave market key (default: usdc). Ignored when protocol=morpho.'),
       chain: z.enum(MORPHO_CHAIN_ENUM).optional().default('base').describe('Chain for the redeem op. Must match where lend_privately was called.'),
     },
-    async ({ vault, chain }) => {
-      log('tool=redeem_privately start', { vault, chain })
+    async ({ protocol, vault, market, chain }) => {
+      log('tool=redeem_privately start', { protocol, vault, market, chain })
       try {
         const b402 = getB402(chain)
-        const result = await b402.privateRedeem({ vault })
-        log('tool=redeem_privately ok', { chainId: b402.chainId, txHash: result.txHash, assetsReceived: result.assetsReceived })
+        const result = await b402.privateRedeem({
+          protocol,
+          vault: vault ?? 'steakhouse-hy',
+          market: market ?? 'usdc',
+        })
+        log('tool=redeem_privately ok', { chainId: b402.chainId, txHash: result.txHash, protocol: result.protocol, assetsReceived: result.assetsReceived })
         return { content: [{ type: 'text', text:
-          `Private redeem complete on ${chain}.\n` +
+          `Private redeem complete on ${chain} via ${result.protocol.toUpperCase()}.\n` +
           `Received: ${result.assetsReceived} USDC → privacy pool\n` +
+          `Position: ${result.vault}\n` +
           `TX: ${explorerTxLink(b402.chainId, result.txHash)}`
         }] }
       } catch (e: any) {

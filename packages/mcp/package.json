@@ -37,7 +37,7 @@
     "yield"
   ],
   "dependencies": {
-    "@b402ai/sdk": "^0.6.0",
+    "@b402ai/sdk": "^0.6.1",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "dotenv": "^16.4.0",
     "ethers": "6.13.1",
