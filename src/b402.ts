@@ -2654,8 +2654,11 @@ export class B402 {
    * LI.FI picks the best tool (Across, Stargate, CCTP, Eco, NearIntents, etc.).
    * Charges a default 0.25% fixed fee.
    *
-   * v1 limitation: source chain must match the SDK's current chain (8453 for now).
-   * Cross-chain source selection will come in a follow-up.
+   * Source-side privacy: RelayAdapt is the visible caller on the source chain;
+   * the user's wallet is hidden inside the ZK proof. Destination-side privacy
+   * is NOT preserved — funds land at `params.destinationAddress` (a public
+   * address). End-to-end shielding via LiFi `/quote/contractCalls` is a v2
+   * follow-up.
    */
   async privateCrossChain(params: PrivateCrossChainParams): Promise<PrivateCrossChainResult> {
     await this.init()
@@ -2666,8 +2669,7 @@ export class B402 {
     const { RELAY_ADAPT_ADDRESS } = await import('./privacy/lib/relay-adapt')
 
     const fromToken = this.resolveToken(params.fromToken)
-    // v1: source chain is Base (same as rest of SDK). Multi-chain source TBD.
-    const sourceChainConfig = getChainConfig(8453)
+    const sourceChainConfig = getChainConfig(this.chainId)
     const destChainConfig = getChainConfig(params.toChain)
 
     if (sourceChainConfig.chainId === destChainConfig.chainId) {
